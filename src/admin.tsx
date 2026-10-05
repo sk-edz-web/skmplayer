@@ -76,15 +76,17 @@ import {
   AlignLeft,
   Cloud,
   History,
-  Folder
+  Folder,
+  ListMusic
 } from "lucide-react";
-import { Song, ReportItem, ReportStatus, AppNotification, SubscriptionKey, ArtistProfile } from "./types";
+import { Song, Playlist, ReportItem, ReportStatus, AppNotification, SubscriptionKey, ArtistProfile } from "./types";
 import AdminReportsManager from "./components/AdminReportsManager";
 import AdminArtistsManager from "./components/AdminArtistsManager";
 import AdminCloudinaryManager from "./components/AdminCloudinaryManager";
 import AdminBulkUpload from "./components/AdminBulkUpload";
 import AdminLastUpdated from "./components/AdminLastUpdated";
 import AdminFolderUploadModal from "./components/AdminFolderUploadModal";
+import AdminPlaylistsManager from "./components/AdminPlaylistsManager";
 import { uploadToCloudinaryDirect } from "./lib/cloudinary";
 import { parseLyrics, hasLyrics, fetchLyricsFromUrl } from "./utils/lyricsParser";
 import { extractAudioFileMetadata, ExtractedAudioMetadata } from "./utils/audioMetadataParser";
@@ -102,8 +104,12 @@ function AdminApp() {
   const [isLoggingIn, setIsLoggingIn] = useState<boolean>(false);
 
   // Tab State
-  const [activeTab, setActiveTab] = useState<"songs" | "batch" | "artists" | "keys" | "cloudinary" | "reports" | "updates">("songs");
+  const [activeTab, setActiveTab] = useState<"songs" | "batch" | "playlists" | "artists" | "keys" | "cloudinary" | "reports" | "updates">("songs");
   const [showFolderUploadModal, setShowFolderUploadModal] = useState<boolean>(false);
+
+  // Admin Playlists State
+  const [adminPlaylists, setAdminPlaylists] = useState<Playlist[]>([]);
+  const [loadingPlaylists, setLoadingPlaylists] = useState<boolean>(true);
 
   // Artist Profiles State
   const [artistsList, setArtistsList] = useState<ArtistProfile[]>([]);
@@ -160,6 +166,11 @@ function AdminApp() {
   const [detectedMetadata, setDetectedMetadata] = useState<ExtractedAudioMetadata | null>(null);
   const [selectedAudioFile, setSelectedAudioFile] = useState<File | null>(null);
   const [isUploadingExtractedCover, setIsUploadingExtractedCover] = useState<boolean>(false);
+
+  // Add to Private Playlist Form State
+  const [addToPlaylistEnabled, setAddToPlaylistEnabled] = useState<boolean>(false);
+  const [selectedPlaylistId, setSelectedPlaylistId] = useState<string>("");
+  const [newPlaylistName, setNewPlaylistName] = useState<string>("");
 
   // Helper to compute SHA-256 hash using native Web Crypto API (No credentials exposed)
   const computeAdminHash = async (email: string, pass: string): Promise<string> => {
@@ -877,15 +888,50 @@ function AdminApp() {
         lyricsUrl: lyricsUrl.trim() || null
       };
 
+      let savedSongId = editingSongId;
       if (editingSongId) {
         await updateDoc(doc(db, "songs", editingSongId), songData);
         setEditingSongId(null);
         setStatusMessage("Song updated successfully! 🎉");
         showAdminToast("Track updated successfully! 🎉", "success");
       } else {
-        await addDoc(collection(db, "songs"), songData);
+        const newDocRef = await addDoc(collection(db, "songs"), songData);
+        savedSongId = newDocRef.id;
         setStatusMessage("Song added successfully! 🎉");
         showAdminToast("New track published to library! 🎵", "success");
+      }
+
+      // Add to Private Playlist if enabled
+      if (addToPlaylistEnabled && savedSongId) {
+        try {
+          if (selectedPlaylistId === "new" && newPlaylistName.trim()) {
+            await addDoc(collection(db, "playlists"), {
+              name: newPlaylistName.trim(),
+              description: "Created during song upload",
+              userId: auth.currentUser?.uid || "admin",
+              songIds: [savedSongId],
+              thumbnailUrl: songData.imageUrl || null,
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+              isPrivate: true // Strictly Private
+            });
+            showAdminToast(`Also added to new private playlist "${newPlaylistName.trim()}"! 🔒`, "success");
+            setNewPlaylistName("");
+          } else if (selectedPlaylistId && selectedPlaylistId !== "new") {
+            const targetPl = adminPlaylists.find(p => p.id === selectedPlaylistId);
+            if (targetPl) {
+              const updatedSongIds = targetPl.songIds.includes(savedSongId) ? targetPl.songIds : [...targetPl.songIds, savedSongId];
+              await updateDoc(doc(db, "playlists", selectedPlaylistId), {
+                songIds: updatedSongIds,
+                thumbnailUrl: targetPl.thumbnailUrl || songData.imageUrl || null,
+                updatedAt: Date.now()
+              });
+              showAdminToast(`Added to private playlist "${targetPl.name}"! 🔒`, "success");
+            }
+          }
+        } catch (plErr) {
+          console.warn("Failed linking to private playlist:", plErr);
+        }
       }
       
       // Clear inputs
@@ -959,6 +1005,36 @@ function AdminApp() {
     }, (error) => {
       console.error("Keys subscription failed:", error);
       setLoadingKeys(false);
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  // Real-time Admin Playlists subscription
+  useEffect(() => {
+    setLoadingPlaylists(true);
+    const q = query(collection(db, "playlists"), orderBy("createdAt", "desc"));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const plArr: Playlist[] = [];
+      snapshot.forEach((docSnap) => {
+        const d = docSnap.data();
+        plArr.push({
+          id: docSnap.id,
+          name: d.name || "Untitled Playlist",
+          userId: d.userId || "admin",
+          songIds: d.songIds || [],
+          thumbnailUrl: d.thumbnailUrl || null,
+          createdAt: d.createdAt || Date.now(),
+          isPrivate: d.isPrivate !== false,
+          description: d.description || "",
+          updatedAt: d.updatedAt || d.createdAt || Date.now()
+        });
+      });
+      setAdminPlaylists(plArr);
+      setLoadingPlaylists(false);
+    }, (error) => {
+      console.warn("Playlists subscription warning:", error);
+      setLoadingPlaylists(false);
     });
 
     return () => unsubscribe();
@@ -1580,6 +1656,23 @@ function AdminApp() {
             </span>
           </button>
 
+          {/* Private Playlists Hub Tab Button */}
+          <button
+            onClick={() => setActiveTab("playlists")}
+            className={`flex items-center space-x-2 px-5 py-2.5 rounded-xl font-bold text-xs transition-all duration-300 ${
+              activeTab === "playlists"
+                ? "bg-gradient-to-r from-purple-600 via-indigo-600 to-blue-600 text-white shadow-lg shadow-purple-500/25"
+                : "text-slate-400 hover:text-slate-200 hover:bg-white/5"
+            }`}
+          >
+            <ListMusic className="w-4 h-4" />
+            <span>Private Playlists</span>
+            <span className="text-[9px] font-mono font-bold px-1.5 py-0.5 rounded-md bg-purple-500/20 text-purple-300 border border-purple-400/30 uppercase ml-1 flex items-center space-x-0.5">
+              <Lock className="w-2.5 h-2.5" />
+              <span>{adminPlaylists.length}</span>
+            </span>
+          </button>
+
           <button
             onClick={() => setActiveTab("artists")}
             className={`flex items-center space-x-2 px-6 py-2.5 rounded-xl font-bold text-xs transition-all duration-300 ${
@@ -1870,6 +1963,87 @@ function AdminApp() {
                         <Zap className="w-3 h-3" />
                         <span>Re-apply Details</span>
                       </button>
+                    </div>
+                  )}
+                </div>
+
+                {/* Add to Private Playlist Option Card */}
+                <div className="p-4 rounded-2xl bg-gradient-to-r from-purple-950/40 via-indigo-950/30 to-[#0c1220] border border-purple-500/30 shadow-md transition-all hover:border-purple-500/50">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center space-x-3 min-w-0 pr-3">
+                      <div className="w-9 h-9 rounded-xl bg-purple-500/20 text-purple-300 flex items-center justify-center border border-purple-500/30 flex-shrink-0">
+                        <ListMusic className="w-5 h-5" />
+                      </div>
+                      <div className="min-w-0">
+                        <div className="flex items-center space-x-2">
+                          <span className="text-xs font-bold text-slate-100 tracking-wide">
+                            Add to Private Playlist
+                          </span>
+                          <span className="text-[9px] font-mono px-2 py-0.5 rounded bg-purple-500/20 text-purple-300 border border-purple-500/30 font-bold uppercase tracking-wider flex items-center space-x-0.5">
+                            <Lock className="w-2.5 h-2.5" />
+                            <span>Private Only</span>
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-slate-400 mt-0.5">
+                          Adds this song to an Admin Private Playlist. The song is in library, but playlist is hidden from normal public users.
+                        </p>
+                      </div>
+                    </div>
+
+                    <label className="relative inline-flex items-center cursor-pointer flex-shrink-0">
+                      <input
+                        type="checkbox"
+                        checked={addToPlaylistEnabled}
+                        onChange={(e) => {
+                          setAddToPlaylistEnabled(e.target.checked);
+                          if (e.target.checked && !selectedPlaylistId && adminPlaylists.length > 0) {
+                            setSelectedPlaylistId(adminPlaylists[0].id);
+                          } else if (e.target.checked && adminPlaylists.length === 0) {
+                            setSelectedPlaylistId("new");
+                          }
+                        }}
+                        className="sr-only peer"
+                      />
+                      <div className="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-gradient-to-r peer-checked:from-purple-500 peer-checked:to-indigo-500"></div>
+                    </label>
+                  </div>
+
+                  {/* Expanded Playlist Choice Picker */}
+                  {addToPlaylistEnabled && (
+                    <div className="mt-3 pt-3 border-t border-purple-500/20 space-y-2.5 animate-fade-in">
+                      <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                        <label className="text-[10px] font-bold text-slate-400 uppercase font-mono sm:w-28 flex-shrink-0">
+                          Select Playlist:
+                        </label>
+                        <select
+                          value={selectedPlaylistId}
+                          onChange={(e) => setSelectedPlaylistId(e.target.value)}
+                          className="flex-1 px-3 py-1.5 bg-black/50 border border-white/10 rounded-xl text-xs text-white outline-none focus:border-purple-400"
+                        >
+                          <option value="new">➕ [+] Create New Private Playlist...</option>
+                          {adminPlaylists.map((pl) => (
+                            <option key={pl.id} value={pl.id}>
+                              📁 {pl.name} ({pl.songIds?.length || 0} tracks)
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {/* New Playlist Name Input if 'new' selected */}
+                      {selectedPlaylistId === "new" && (
+                        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                          <label className="text-[10px] font-bold text-purple-300 uppercase font-mono sm:w-28 flex-shrink-0">
+                            New Playlist Name:
+                          </label>
+                          <input 
+                            type="text"
+                            value={newPlaylistName}
+                            onChange={(e) => setNewPlaylistName(e.target.value)}
+                            placeholder="e.g. My Exclusive Favorites"
+                            className="flex-1 px-3 py-1.5 bg-black/50 border border-purple-500/40 rounded-xl text-xs text-white outline-none focus:border-purple-400 placeholder-slate-500"
+                          />
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -3043,6 +3217,15 @@ function AdminApp() {
               )}
             </div>
           </div>
+        )}
+
+        {/* Tab: Admin Private Playlists Hub */}
+        {activeTab === "playlists" && (
+          <AdminPlaylistsManager
+            songs={songs}
+            onSongAdded={fetchSongs}
+            onShowToast={showAdminToast}
+          />
         )}
 
         {/* Tab 2: Artist Profiles Manager */}

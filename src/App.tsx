@@ -1068,13 +1068,16 @@ export default function App() {
       const playlistList: Playlist[] = [];
       snapshot.forEach((doc) => {
         const data = doc.data();
+        if (data.isPrivate && data.userId !== user.uid) return;
         playlistList.push({
           id: doc.id,
           name: data.name || "My Playlist",
           userId: data.userId || "",
           songIds: data.songIds || [],
           thumbnailUrl: data.thumbnailUrl || null,
-          createdAt: data.createdAt || Date.now()
+          createdAt: data.createdAt || Date.now(),
+          isPrivate: data.isPrivate || false,
+          description: data.description || ""
         });
       });
       setPlaylists(playlistList);

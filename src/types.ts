@@ -35,6 +35,9 @@ export interface Playlist {
   songIds: string[];
   createdAt: number;
   thumbnailUrl?: string;
+  isPrivate?: boolean;
+  description?: string;
+  updatedAt?: number;
 }
 
 export interface UserProfile {

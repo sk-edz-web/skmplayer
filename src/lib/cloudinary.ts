@@ -115,6 +115,8 @@ export async function saveCloudinaryConfig(config: CloudinaryConfig): Promise<vo
 
 /**
  * Directly uploads a File (audio, image, video) to Cloudinary via REST API with live progress tracking
+ * Automatically attempts video endpoint for audio, and transparently falls back to raw/auto endpoint
+ * if Cloudinary's transcoder reports unsupported video format.
  */
 export async function uploadToCloudinaryDirect(
   file: File,
@@ -126,69 +128,128 @@ export async function uploadToCloudinaryDirect(
     throw new Error("CLOUDINARY_NOT_CONFIGURED");
   }
 
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    
-    // Cloudinary treats audio files as resource_type "video" or "auto"
-    let resourceType = "auto";
-    if (file.type.startsWith("image/")) {
-      resourceType = "image";
-    } else if (file.type.startsWith("audio/")) {
-      resourceType = "video"; // Cloudinary uses "video" endpoint for audio files
-    }
+  const isImage = file.type.startsWith("image/") || /\.(jpg|jpeg|png|webp|gif|svg)$/i.test(file.name);
 
-    const endpoint = `https://api.cloudinary.com/v1_1/${encodeURIComponent(config.cloudName)}/${resourceType}/upload`;
+  // Helper function to attempt upload to a specific resource_type endpoint
+  const attemptUpload = (resourceType: "image" | "video" | "raw" | "auto"): Promise<{ secure_url: string; format: string; duration?: number | null }> => {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      const endpoint = `https://api.cloudinary.com/v1_1/${encodeURIComponent(config.cloudName)}/${resourceType}/upload`;
 
-    const formData = new FormData();
-    formData.append("file", file);
-    formData.append("upload_preset", config.uploadPreset);
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("upload_preset", config.uploadPreset);
 
-    if (xhr.upload) {
-      xhr.upload.onprogress = (event) => {
-        if (event.lengthComputable && onProgress) {
-          const percent = Math.round((event.loaded / event.total) * 100);
-          onProgress(percent);
+      if (xhr.upload) {
+        xhr.upload.onprogress = (event) => {
+          if (event.lengthComputable && onProgress) {
+            const percent = Math.round((event.loaded / event.total) * 100);
+            onProgress(percent);
+          }
+        };
+      }
+
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            const data = JSON.parse(xhr.responseText);
+            if (data.secure_url) {
+              resolve({
+                secure_url: data.secure_url,
+                format: data.format || file.name.split(".").pop() || (isImage ? "png" : "mp3"),
+                duration: data.duration || null
+              });
+            } else {
+              reject(new Error(data.error?.message || "No secure_url returned from Cloudinary"));
+            }
+          } catch (err: any) {
+            reject(new Error("Failed to parse Cloudinary response: " + err.message));
+          }
+        } else {
+          try {
+            const errData = JSON.parse(xhr.responseText);
+            reject(new Error(errData.error?.message || `Cloudinary upload failed (HTTP ${xhr.status})`));
+          } catch {
+            reject(new Error(`Cloudinary upload failed with HTTP ${xhr.status}`));
+          }
         }
       };
+
+      xhr.onerror = () => {
+        reject(new Error("Network error occurred while uploading to Cloudinary"));
+      };
+
+      xhr.ontimeout = () => {
+        reject(new Error("Upload request timed out"));
+      };
+
+      xhr.open("POST", endpoint, true);
+      xhr.send(formData);
+    });
+  };
+
+  // Helper for server-side proxy fallback (/api/upload)
+  const uploadViaServerProxy = async (): Promise<{ secure_url: string; format: string; duration?: number | null }> => {
+    console.log(`[Cloudinary] Using server-side proxy fallback for ${file.name}...`);
+    const reader = new FileReader();
+    const base64Data = await new Promise<string>((resolve, reject) => {
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+
+    const res = await fetch("/api/upload", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        file: base64Data,
+        presetType: isImage ? "admin_image" : "admin_audio"
+      })
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`Server upload failed (${res.status}): ${errText}`);
     }
 
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        try {
-          const data = JSON.parse(xhr.responseText);
-          if (data.secure_url) {
-            resolve({
-              secure_url: data.secure_url,
-              format: data.format || file.name.split(".").pop() || "mp3",
-              duration: data.duration || null
-            });
-          } else {
-            reject(new Error(data.error?.message || "No secure_url returned from Cloudinary"));
-          }
-        } catch (err: any) {
-          reject(new Error("Failed to parse Cloudinary response: " + err.message));
-        }
-      } else {
-        try {
-          const errData = JSON.parse(xhr.responseText);
-          reject(new Error(errData.error?.message || `Cloudinary upload failed (HTTP ${xhr.status})`));
-        } catch {
-          reject(new Error(`Cloudinary upload failed with HTTP ${xhr.status}`));
-        }
+    const data = await res.json();
+    if (data.secure_url) {
+      if (onProgress) onProgress(100);
+      return {
+        secure_url: data.secure_url,
+        format: data.format || (isImage ? "png" : "mp3"),
+        duration: data.duration || null
+      };
+    }
+    throw new Error(data.message || data.error || "No secure URL returned from server upload");
+  };
+
+  if (isImage) {
+    try {
+      return await attemptUpload("image");
+    } catch (imgErr) {
+      console.warn("[Cloudinary] Direct image upload failed, falling back to server:", imgErr);
+      return await uploadViaServerProxy();
+    }
+  }
+
+  // For audio files, try video/upload first, then raw/upload, then auto/upload, then server proxy fallback!
+  try {
+    return await attemptUpload("video");
+  } catch (err: any) {
+    console.warn(`[Cloudinary] Video endpoint failed for ${file.name} (${err.message}), retrying with raw endpoint...`);
+    try {
+      return await attemptUpload("raw");
+    } catch (rawErr: any) {
+      console.warn(`[Cloudinary] Raw endpoint also failed, retrying with auto endpoint...`);
+      try {
+        return await attemptUpload("auto");
+      } catch (autoErr: any) {
+        console.warn(`[Cloudinary] All direct endpoints failed for ${file.name}, using resilient server fallback...`);
+        return await uploadViaServerProxy();
       }
-    };
-
-    xhr.onerror = () => {
-      reject(new Error("Network error occurred while uploading to Cloudinary"));
-    };
-
-    xhr.ontimeout = () => {
-      reject(new Error("Upload request timed out"));
-    };
-
-    xhr.open("POST", endpoint, true);
-    xhr.send(formData);
-  });
+    }
+  }
 }
 
 /**

@@ -34,12 +34,15 @@ import {
   Tag,
   Clock,
   Trash2,
-  ExternalLink
+  ExternalLink,
+  Lock,
+  ListMusic
 } from "lucide-react";
 import { Song, ArtistProfile } from "../types";
 import { extractAudioFileMetadata } from "../utils/audioMetadataParser";
 import { uploadToCloudinaryDirect } from "../lib/cloudinary";
-import { collection, addDoc, doc, updateDoc } from "firebase/firestore";
+import { scanDroppedItems, processFilesList } from "../utils/folderScanner";
+import { collection, addDoc, doc, updateDoc, getDoc } from "firebase/firestore";
 import { db, auth } from "../firebase";
 
 export interface FolderSongItem {
@@ -115,6 +118,11 @@ export default function AdminFolderUploadModal({
   const pauseRef = useRef<boolean>(false);
   const cancelRef = useRef<boolean>(false);
 
+  // Private Playlist Routing for Folder Upload
+  const [addToPrivatePlaylist, setAddToPrivatePlaylist] = useState<boolean>(true);
+  const [folderPlaylistName, setFolderPlaylistName] = useState<string>("");
+  const folderPlaylistDocRef = useRef<string | null>(null);
+
   // Active View & Filters
   const [activeView, setActiveView] = useState<"queue" | "inspector">("queue");
   const [filterType, setFilterType] = useState<"all" | "missing_any" | "missing_cover" | "missing_artist" | "missing_lyrics" | "complete">("all");
@@ -127,11 +135,21 @@ export default function AdminFolderUploadModal({
   
   // HTML Folder Input Ref
   const folderInputRef = useRef<HTMLInputElement | null>(null);
+  const [isDraggingModal, setIsDraggingModal] = useState<boolean>(false);
 
   // Keep ref synced with paused state for loop control
   useEffect(() => {
     pauseRef.current = isPaused;
   }, [isPaused]);
+
+  // Set webkitdirectory, directory, and multiple on folder input element
+  useEffect(() => {
+    if (folderInputRef.current) {
+      folderInputRef.current.setAttribute("webkitdirectory", "");
+      folderInputRef.current.setAttribute("directory", "");
+      folderInputRef.current.setAttribute("multiple", "");
+    }
+  }, [isOpen]);
 
   // Compute missing details helper
   const computeMissing = (item: Partial<FolderSongItem>): FolderSongItem["missingDetails"] => {
@@ -212,6 +230,8 @@ export default function AdminFolderUploadModal({
     }
     setFolderName(detectedFolderName);
     setFolderPath((allFiles[0] as any).webkitRelativePath || detectedFolderName);
+    setFolderPlaylistName(detectedFolderName);
+    folderPlaylistDocRef.current = null;
 
     // Filter audio files
     const audioFiles = allFiles.filter(f => 
@@ -329,6 +349,31 @@ export default function AdminFolderUploadModal({
         console.warn("Folder metadata parse warning:", item.fileName, err);
       }
     }
+
+    if (folderInputRef.current) {
+      folderInputRef.current.value = "";
+    }
+  };
+
+  // Handle Drag & Drop of folder onto modal
+  const handleModalDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDraggingModal(false);
+    if (!e.dataTransfer) return;
+
+    try {
+      onShowToast("Scanning dropped folder & audio files...", "info");
+      const scanned = await scanDroppedItems(e.dataTransfer);
+      if (scanned.audioFiles.length === 0) {
+        onShowToast("No audio files found in dropped items.", "error");
+        return;
+      }
+      // Load scanned files into folder items
+      await handleFolderSelected(scanned.allFiles as any);
+    } catch (err: any) {
+      console.warn("Folder modal drop error:", err);
+      onShowToast("Drop processing failed: " + err?.message, "error");
+    }
   };
 
   // Upload a single track strictly sequentially
@@ -439,6 +484,39 @@ export default function AdminFolderUploadModal({
       };
 
       const docRef = await addDoc(collection(db, "songs"), songDocData);
+
+      // Add to Folder Private Playlist if enabled
+      if (addToPrivatePlaylist) {
+        try {
+          if (!folderPlaylistDocRef.current) {
+            const plDoc = await addDoc(collection(db, "playlists"), {
+              name: folderPlaylistName.trim() || folderName || "Folder Album Playlist",
+              description: `Private playlist created from folder "${folderName}"`,
+              userId: auth.currentUser?.uid || "admin",
+              songIds: [docRef.id],
+              thumbnailUrl: finalImageUrl || null,
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+              isPrivate: true
+            });
+            folderPlaylistDocRef.current = plDoc.id;
+          } else {
+            const plRef = doc(db, "playlists", folderPlaylistDocRef.current);
+            const snap = await getDoc(plRef);
+            if (snap.exists()) {
+              const currentIds = snap.data().songIds || [];
+              if (!currentIds.includes(docRef.id)) {
+                await updateDoc(plRef, {
+                  songIds: [...currentIds, docRef.id],
+                  updatedAt: Date.now()
+                });
+              }
+            }
+          }
+        } catch (plErr) {
+          console.warn("Folder private playlist sync warning:", plErr);
+        }
+      }
 
       // 5. Update state to Success
       setFolderSongs(prev => prev.map((s, i) => {
@@ -674,7 +752,17 @@ export default function AdminFolderUploadModal({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 bg-[#060913] text-slate-100 flex flex-col h-screen w-screen overflow-hidden select-none">
+    <div 
+      onDragOver={(e) => {
+        e.preventDefault();
+        setIsDraggingModal(true);
+      }}
+      onDragLeave={() => setIsDraggingModal(false)}
+      onDrop={handleModalDrop}
+      className={`fixed inset-0 z-50 bg-[#060913] text-slate-100 flex flex-col h-screen w-screen overflow-hidden select-none transition-all ${
+        isDraggingModal ? "ring-4 ring-cyan-400 ring-inset bg-cyan-950/20" : ""
+      }`}
+    >
       {/* Hidden audio player for preview */}
       <audio 
         ref={audioPreviewRef} 
@@ -686,10 +774,6 @@ export default function AdminFolderUploadModal({
       <input 
         ref={folderInputRef}
         type="file"
-        // @ts-ignore: standard browser webkitdirectory attribute
-        webkitdirectory="true"
-        // @ts-ignore
-        directory="true"
         multiple
         className="hidden"
         onChange={(e) => handleFolderSelected(e.target.files)}
@@ -741,7 +825,9 @@ export default function AdminFolderUploadModal({
                 >
                   <UploadCloud className="w-4 h-4" />
                   <span>
-                    {successCount > 0 ? `Resume (${folderSongs.length - successCount} Left)` : "Start Sequential Upload"}
+                    {successCount > 0 
+                      ? `Resume Upload (${folderSongs.length - successCount} Remaining)` 
+                      : `Upload All (${folderSongs.length}) Songs Sequentially`}
                   </span>
                 </button>
               ) : (
@@ -761,7 +847,7 @@ export default function AdminFolderUploadModal({
 
                   <div className="hidden lg:flex items-center space-x-2 px-3 py-1.5 rounded-xl bg-cyan-950/60 border border-cyan-500/30 text-cyan-300 text-xs font-mono">
                     <Loader2 className="w-3.5 h-3.5 animate-spin text-cyan-400" />
-                    <span>Uploading #{currentUploadingIndex + 1} of {totalCount}</span>
+                    <span>Uploading #{currentUploadingIndex + 1} of {totalCount} ({totalCount - successCount} Left)</span>
                   </div>
                 </div>
               )}
@@ -847,6 +933,9 @@ export default function AdminFolderUploadModal({
               <span className="text-cyan-400 font-bold">
                 {successCount} of {totalCount} Uploaded ({overallPercent}%)
               </span>
+              <span className="text-amber-400 font-bold">
+                • {totalCount - successCount} Songs Remaining
+              </span>
               {currentUploadingIndex >= 0 && folderSongs[currentUploadingIndex] && (
                 <span className="text-purple-300 truncate max-w-sm">
                   Active: <strong>{folderSongs[currentUploadingIndex].title}</strong> ({folderSongs[currentUploadingIndex].currentStep})
@@ -877,6 +966,41 @@ export default function AdminFolderUploadModal({
               className="h-full bg-gradient-to-r from-cyan-400 via-blue-500 to-emerald-400 transition-all duration-300 shadow-sm"
               style={{ width: `${overallPercent}%` }}
             ></div>
+          </div>
+
+          {/* Folder Private Playlist Option Strip */}
+          <div className="mt-2.5 pt-2 border-t border-white/5 flex flex-wrap items-center justify-between gap-3 text-xs">
+            <div className="flex items-center space-x-2.5">
+              <label className="relative inline-flex items-center cursor-pointer flex-shrink-0">
+                <input 
+                  type="checkbox"
+                  checked={addToPrivatePlaylist}
+                  onChange={(e) => setAddToPrivatePlaylist(e.target.checked)}
+                  className="sr-only peer"
+                />
+                <div className="w-9 h-4.5 bg-slate-800 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-3.5 after:w-3.5 after:transition-all peer-checked:bg-purple-600"></div>
+              </label>
+              <span className="font-bold text-white flex items-center space-x-1.5 font-mono">
+                <Lock className="w-3.5 h-3.5 text-purple-400" />
+                <span>Auto-create Private Playlist for this Folder</span>
+              </span>
+              <span className="text-[10px] text-slate-400 hidden sm:inline font-mono">
+                (Visible in Admin Console • Hidden from public users)
+              </span>
+            </div>
+
+            {addToPrivatePlaylist && (
+              <div className="flex items-center space-x-2">
+                <span className="text-[10px] font-mono text-purple-300 uppercase font-bold">Playlist Name:</span>
+                <input 
+                  type="text"
+                  value={folderPlaylistName}
+                  onChange={(e) => setFolderPlaylistName(e.target.value)}
+                  placeholder="Folder Playlist Name"
+                  className="px-2.5 py-1 bg-black/60 border border-purple-500/30 text-white rounded-lg text-xs outline-none focus:border-purple-400 w-48 font-semibold"
+                />
+              </div>
+            )}
           </div>
         </div>
       )}

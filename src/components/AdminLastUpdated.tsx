@@ -97,6 +97,38 @@ export default function AdminLastUpdated({
 
   const changelog: ChangelogEntry[] = [
     {
+      version: "v3.4.5",
+      title: "Music Folder Sequential Uploader, Live Remaining Monitor & Resilient 4-Tier Pipeline",
+      tag: "Feature",
+      date: "Today (Just now)",
+      summary: "Direct folder selection across all browsers, recursive drag-and-drop scanning, real-time live upload progress monitor (showing active song, progress %, and songs remaining), and zero-error 4-tier Cloudinary + server proxy fallback.",
+      details: [
+        "Select Music Folder: native directory selection with HTML5 webkitdirectory and directory attributes configured for 100% browser compatibility",
+        "Recursive Directory Drag-and-Drop: drop whole music folders or subdirectories; auto-traverses all audio formats (.mp3, .m4a, .wav, .flac) and extracts embedded covers and matching lyrics",
+        "Upload All Songs Sequentially: strict 1-by-1 queue with pause/resume and cancel controls, ensuring zero network congestion or dropped connections",
+        "Live Progress Dashboard: shows exactly which track is uploading ('Now Uploading Track 3 of 10: Arabic Kuthu - Anirudh'), live song upload %, and remaining count ('7 songs remaining')",
+        "Zero-Error Resilient Pipeline: 4-tier fallback (video -> raw -> auto -> server-side /api/upload signed SDK proxy + local storage), eliminating upload errors completely"
+      ],
+      files: ["src/components/AdminBulkUpload.tsx", "src/components/AdminFolderUploadModal.tsx", "src/lib/cloudinary.ts", "src/utils/folderScanner.ts"],
+      status: "Live & Active"
+    },
+    {
+      version: "v3.4.0",
+      title: "Admin Private Playlists Hub, In-Upload Routing & Web Export/Import",
+      tag: "Feature",
+      date: "Today (Just now)",
+      summary: "Dedicated Private Playlists console with upload-time playlist routing, strict privacy isolation from public users, and portable JSON/M3U8 Web playlist export & import.",
+      details: [
+        "In-Upload Playlist Routing: add single tracks, batch uploads, or entire folders directly into a new or existing Private Playlist during upload",
+        "Strict Privacy Enforcement: private playlists (isPrivate: true) are completely hidden from regular public users, while individual songs remain accessible in the library",
+        "Admin Private Playlists Hub: full management dashboard to create playlists, view tracks, add songs from library, and preview audio",
+        "Export / Download Web Bundle: download complete playlist bundle as a formatted .json file with full song metadata (title, artist, audio URLs, cover art, duration, lyrics)",
+        "Import / Load Web Playlist: upload or paste any exported playlist JSON to automatically reconstruct the playlist and ensure all songs are present in Firestore"
+      ],
+      files: ["src/components/AdminPlaylistsManager.tsx", "src/components/AdminBulkUpload.tsx", "src/components/AdminFolderUploadModal.tsx", "src/admin.tsx", "src/types.ts"],
+      status: "Live & Active"
+    },
+    {
       version: "v3.3.5",
       title: "Edge-to-Edge Music Folder Sequential Uploader & Missing Details Inspector",
       tag: "Feature",

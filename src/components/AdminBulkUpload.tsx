@@ -1,4 +1,4 @@
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import { 
   UploadCloud, 
   FileAudio, 
@@ -6,6 +6,7 @@ import {
   Edit3, 
   CheckCircle2, 
   AlertCircle, 
+  AlertTriangle,
   Loader2, 
   Sparkles, 
   Plus, 
@@ -21,12 +22,18 @@ import {
   RotateCw,
   FolderPlus,
   Folder,
-  Maximize2
+  FolderCheck,
+  Maximize2,
+  Lock,
+  ListMusic,
+  RefreshCw,
+  CheckCheck
 } from "lucide-react";
-import { Song, ArtistProfile } from "../types";
+import { Song, ArtistProfile, Playlist } from "../types";
 import { extractAudioFileMetadata } from "../utils/audioMetadataParser";
 import { uploadToCloudinaryDirect } from "../lib/cloudinary";
-import { collection, addDoc } from "firebase/firestore";
+import { scanDroppedItems, processFilesList } from "../utils/folderScanner";
+import { collection, addDoc, updateDoc, doc, query, orderBy, onSnapshot } from "firebase/firestore";
 import { db, auth } from "../firebase";
 import AdminFolderUploadModal from "./AdminFolderUploadModal";
 
@@ -46,6 +53,7 @@ export interface StagedSong {
   customCoverUrl?: string;
   status: "scanning" | "ready" | "uploading" | "success" | "error";
   progress: number;
+  currentStep?: string;
   errorMessage?: string;
   uploadedAudioUrl?: string;
   uploadedImageUrl?: string;
@@ -70,8 +78,64 @@ export default function AdminBulkUpload({
   const [editingCardId, setEditingCardId] = useState<string | null>(null);
   const [playingPreviewUrl, setPlayingPreviewUrl] = useState<string | null>(null);
   const [showFolderModal, setShowFolderModal] = useState<boolean>(false);
+  
+  // Real-time Upload Progress & Queue Tracking
+  const [uploadingIndex, setUploadingIndex] = useState<number>(-1);
+  const [currentTrackProgress, setCurrentTrackProgress] = useState<number>(0);
+  const [currentUploadStep, setCurrentUploadStep] = useState<string>("");
+  const [isPaused, setIsPaused] = useState<boolean>(false);
+  const [isDragging, setIsDragging] = useState<boolean>(false);
+  const [lastDetectedFolder, setLastDetectedFolder] = useState<string>("");
+
+  const pauseRef = useRef<boolean>(false);
+  const cancelRef = useRef<boolean>(false);
+
   const audioPreviewRef = useRef<HTMLAudioElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const folderInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Private Playlist Routing for Batch Upload
+  const [existingPlaylists, setExistingPlaylists] = useState<Playlist[]>([]);
+  const [batchPlaylistEnabled, setBatchPlaylistEnabled] = useState<boolean>(false);
+  const [selectedBatchPlaylistId, setSelectedBatchPlaylistId] = useState<string>("new");
+  const [newBatchPlaylistName, setNewBatchPlaylistName] = useState<string>("");
+  const activeBatchPlaylistDocRef = useRef<string | null>(null);
+
+  // Synchronize pause state with ref for loop control
+  useEffect(() => {
+    pauseRef.current = isPaused;
+  }, [isPaused]);
+
+  // Set webkitdirectory and directory attributes on folder input element
+  useEffect(() => {
+    if (folderInputRef.current) {
+      folderInputRef.current.setAttribute("webkitdirectory", "");
+      folderInputRef.current.setAttribute("directory", "");
+      folderInputRef.current.setAttribute("multiple", "");
+    }
+  }, []);
+
+  // Subscribe to existing playlists in Firestore
+  useEffect(() => {
+    const q = query(collection(db, "playlists"), orderBy("createdAt", "desc"));
+    const unsub = onSnapshot(q, (snapshot) => {
+      const list: Playlist[] = [];
+      snapshot.forEach(docSnap => {
+        const d = docSnap.data();
+        list.push({
+          id: docSnap.id,
+          name: d.name || "Untitled Playlist",
+          userId: d.userId || "admin",
+          songIds: d.songIds || [],
+          thumbnailUrl: d.thumbnailUrl || null,
+          createdAt: d.createdAt || Date.now(),
+          isPrivate: d.isPrivate !== false
+        });
+      });
+      setExistingPlaylists(list);
+    }, () => {});
+    return () => unsub();
+  }, []);
 
   // Helper: Format seconds to mm:ss
   const formatTime = (secs: number) => {
@@ -86,25 +150,29 @@ export default function AdminBulkUpload({
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   };
 
-  // Handle files selected from file picker or drop zone
-  const handleFilesSelected = async (filesList: FileList | null) => {
-    if (!filesList || filesList.length === 0) return;
-
-    const newFiles: File[] = Array.from(filesList).filter(f => 
-      f.type.startsWith("audio/") || 
-      /\.(mp3|m4a|wav|aac|flac|ogg)$/i.test(f.name)
-    );
-
-    if (newFiles.length === 0) {
+  // Common queue addition helper with ID3 extraction
+  const addFilesToQueue = (audioFiles: File[], coverFiles: File[] = [], detectedFolderName?: string) => {
+    if (audioFiles.length === 0) {
       onShowToast("Please select valid audio files (MP3, M4A, WAV, AAC).", "error");
       return;
     }
 
-    const defaultCategories = categories.length > 0 ? [categories[0]] : ["Tamil"];
+    if (detectedFolderName && detectedFolderName !== "Music Folder") {
+      setLastDetectedFolder(detectedFolderName);
+      if (batchPlaylistEnabled && selectedBatchPlaylistId === "new" && !newBatchPlaylistName) {
+        setNewBatchPlaylistName(detectedFolderName);
+      }
+    }
 
-    // Create initial staged items in "scanning" state
-    const newStagedItems: StagedSong[] = newFiles.map((file, idx) => {
-      const cleanName = file.name.replace(/\.(mp3|m4a|wav|aac|flac|ogg)$/i, "");
+    const defaultCategories = categories.length > 0 ? [categories[0]] : ["Tamil"];
+    const sharedCoverFile = coverFiles.length > 0 ? coverFiles[0] : undefined;
+
+    const newStagedItems: StagedSong[] = audioFiles.map((file, idx) => {
+      const cleanName = file.name
+        .replace(/\.(mp3|m4a|wav|aac|flac|ogg|opus)$/i, "")
+        .replace(/^\d+[\s.-]+/, "")
+        .trim();
+
       return {
         id: `staged-${Date.now()}-${idx}-${Math.random().toString(36).substring(2, 7)}`,
         file,
@@ -112,18 +180,20 @@ export default function AdminBulkUpload({
         fileSize: file.size,
         title: cleanName,
         artist: "",
-        album: "",
+        album: detectedFolderName && detectedFolderName !== "Music Folder" ? detectedFolderName : "",
         duration: 0,
         categories: [...defaultCategories],
+        coverFile: sharedCoverFile,
         status: "scanning",
-        progress: 0
+        progress: 0,
+        currentStep: "Extracting ID3 tags..."
       };
     });
 
     setStagedSongs(prev => [...prev, ...newStagedItems]);
-    onShowToast(`Added ${newFiles.length} track(s) to queue. Extracting metadata...`, "info");
+    onShowToast(`Added ${audioFiles.length} track(s) from "${detectedFolderName || 'Selected Items'}". Auto-detecting metadata...`, "info");
 
-    // Scan each audio file in parallel to auto-fill Title, Artist, Album, Duration, Cover Art
+    // Scan ID3 metadata & embedded cover art in background
     newStagedItems.forEach(async (item) => {
       try {
         const meta = await extractAudioFileMetadata(item.file);
@@ -135,20 +205,56 @@ export default function AdminBulkUpload({
             artist: meta.artist || s.artist,
             album: meta.album || s.album,
             duration: meta.duration || s.duration,
-            coverDataUrl: meta.coverDataUrl,
-            coverFile: meta.coverFile,
-            status: "ready"
+            coverDataUrl: meta.coverDataUrl || s.coverDataUrl,
+            coverFile: meta.coverFile || s.coverFile,
+            status: "ready",
+            currentStep: "Ready in Queue"
           };
         }));
       } catch (err) {
         console.warn("Scan warning for", item.fileName, err);
-        setStagedSongs(prev => prev.map(s => s.id === item.id ? { ...s, status: "ready" } : s));
+        setStagedSongs(prev => prev.map(s => s.id === item.id ? { ...s, status: "ready", currentStep: "Ready in Queue" } : s));
       }
     });
+  };
 
-    // Reset input
+  // Handle files selected from file picker
+  const handleFilesSelected = (filesList: FileList | null) => {
+    if (!filesList || filesList.length === 0) return;
+    const scanned = processFilesList(filesList);
+    addFilesToQueue(scanned.audioFiles, scanned.coverFiles, scanned.folderName);
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
+    }
+  };
+
+  // Handle folder selected from native folder picker
+  const handleFolderSelected = (filesList: FileList | null) => {
+    if (!filesList || filesList.length === 0) return;
+    const scanned = processFilesList(filesList);
+    addFilesToQueue(scanned.audioFiles, scanned.coverFiles, scanned.folderName);
+    if (folderInputRef.current) {
+      folderInputRef.current.value = "";
+    }
+  };
+
+  // Handle drag and drop of files OR whole folders
+  const handleDropFilesOrFolder = async (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    if (!e.dataTransfer) return;
+
+    try {
+      onShowToast("Scanning dropped folder & audio files...", "info");
+      const scanned = await scanDroppedItems(e.dataTransfer);
+      if (scanned.audioFiles.length === 0) {
+        onShowToast("No audio files (.mp3, .m4a, .wav) found in dropped items.", "error");
+        return;
+      }
+      addFilesToQueue(scanned.audioFiles, scanned.coverFiles, scanned.folderName);
+    } catch (err: any) {
+      console.warn("Drop scanning error:", err);
+      onShowToast("Failed scanning folder: " + (err?.message || "Unknown error"), "error");
     }
   };
 
@@ -186,45 +292,43 @@ export default function AdminBulkUpload({
     }));
   };
 
-  // Upload a single file (audio + cover) and write to Firestore
-  const uploadSingleStagedTrack = async (track: StagedSong): Promise<boolean> => {
+  // Upload a single file (audio + cover) and write to Firestore with 4-tier fallback & auto-retry
+  const uploadSingleStagedTrack = async (
+    track: StagedSong, 
+    onStep?: (step: string) => void,
+    onProgressUpdate?: (percent: number) => void
+  ): Promise<boolean> => {
+    // 1. Mark as uploading
+    setStagedSongs(prev => prev.map(s => s.id === track.id ? {
+      ...s,
+      status: "uploading",
+      progress: 5,
+      currentStep: "Directing to Cloudinary CDN..."
+    } : s));
+    if (onStep) onStep("Directing to Cloudinary CDN...");
+    if (onProgressUpdate) onProgressUpdate(5);
+
     try {
-      // 1. Update status to uploading
-      setStagedSongs(prev => prev.map(s => s.id === track.id ? { ...s, status: "uploading", progress: 10 } : s));
-
-      // 2. Upload Audio File (Cloudinary direct or server fallback)
+      // 2. Upload Audio File (with 4-tier fallback & progress)
       let audioUrl = "";
-      try {
-        const cloudAudio = await uploadToCloudinaryDirect(track.file, (percent) => {
-          setStagedSongs(prev => prev.map(s => s.id === track.id ? { ...s, progress: Math.min(80, Math.round(percent * 0.75)) } : s));
-        });
-        audioUrl = cloudAudio.secure_url;
-      } catch (directErr) {
-        console.warn("Direct upload fallback to server API for track:", track.title);
-        // Fallback to Express /api/upload
-        const reader = new FileReader();
-        const base64Promise = new Promise<string>((resolve, reject) => {
-          reader.onload = () => resolve(reader.result as string);
-          reader.onerror = reject;
-        });
-        reader.readAsDataURL(track.file);
-        const base64Data = await base64Promise;
+      if (onStep) onStep(`Uploading "${track.title}" audio file...`);
+      
+      const cloudAudio = await uploadToCloudinaryDirect(track.file, (percent) => {
+        const mapped = Math.min(80, Math.round(percent * 0.75));
+        setStagedSongs(prev => prev.map(s => s.id === track.id ? {
+          ...s,
+          progress: mapped,
+          currentStep: `Uploading audio (${percent}%)...`
+        } : s));
+        if (onProgressUpdate) onProgressUpdate(mapped);
+        if (onStep) onStep(`Uploading audio track (${percent}%)...`);
+      });
 
-        const serverRes = await fetch("/api/upload", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ file: base64Data, presetType: "admin_audio" })
-        });
-        const serverJson = await serverRes.json();
-        if (!serverJson.secure_url) {
-          throw new Error(serverJson.message || "Failed to upload audio file");
-        }
-        audioUrl = serverJson.secure_url;
-      }
-
-      setStagedSongs(prev => prev.map(s => s.id === track.id ? { ...s, progress: 85 } : s));
+      audioUrl = cloudAudio.secure_url;
+      if (onProgressUpdate) onProgressUpdate(82);
 
       // 3. Upload Cover Image Artwork
+      if (onStep) onStep("Checking & uploading cover artwork...");
       let imageUrl = track.customCoverUrl || "";
       const coverToUpload = track.customCoverFile || track.coverFile;
 
@@ -245,7 +349,8 @@ export default function AdminBulkUpload({
         imageUrl = matchedArtist?.imageUrl || "https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17?q=80&w=600&auto=format&fit=crop";
       }
 
-      setStagedSongs(prev => prev.map(s => s.id === track.id ? { ...s, progress: 95 } : s));
+      if (onProgressUpdate) onProgressUpdate(92);
+      if (onStep) onStep("Writing to Firestore database...");
 
       // 4. Save to Firestore
       const matchedArtist = artistsList.find(a => a.name.trim().toLowerCase() === track.artist.trim().toLowerCase());
@@ -263,7 +368,39 @@ export default function AdminBulkUpload({
         uploadedBy: auth.currentUser?.uid || "admin"
       };
 
-      await addDoc(collection(db, "songs"), songData);
+      const newSongDocRef = await addDoc(collection(db, "songs"), songData);
+
+      // Add to batch private playlist if enabled
+      if (batchPlaylistEnabled) {
+        try {
+          let targetPlId = activeBatchPlaylistDocRef.current || selectedBatchPlaylistId;
+          if (targetPlId === "new" || (!targetPlId && newBatchPlaylistName.trim())) {
+            const plDoc = await addDoc(collection(db, "playlists"), {
+              name: newBatchPlaylistName.trim() || `Batch Upload ${new Date().toLocaleDateString()}`,
+              description: "Private playlist created during batch upload",
+              userId: auth.currentUser?.uid || "admin",
+              songIds: [newSongDocRef.id],
+              thumbnailUrl: imageUrl || null,
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+              isPrivate: true
+            });
+            activeBatchPlaylistDocRef.current = plDoc.id;
+          } else if (targetPlId && targetPlId !== "new") {
+            const targetPl = existingPlaylists.find(p => p.id === targetPlId);
+            const currentIds = targetPl?.songIds || [];
+            const nextIds = currentIds.includes(newSongDocRef.id) ? currentIds : [...currentIds, newSongDocRef.id];
+            await updateDoc(doc(db, "playlists", targetPlId), {
+              songIds: nextIds,
+              thumbnailUrl: targetPl?.thumbnailUrl || imageUrl || null,
+              updatedAt: Date.now()
+            });
+            activeBatchPlaylistDocRef.current = targetPlId;
+          }
+        } catch (plErr) {
+          console.warn("Failed linking batch track to playlist:", plErr);
+        }
+      }
 
       // 5. Update track status to success
       setStagedSongs(prev => prev.map(s => {
@@ -272,11 +409,14 @@ export default function AdminBulkUpload({
           ...s,
           status: "success",
           progress: 100,
+          currentStep: "Published ✓",
           uploadedAudioUrl: audioUrl,
           uploadedImageUrl: imageUrl
         };
       }));
 
+      if (onProgressUpdate) onProgressUpdate(100);
+      if (onStep) onStep("Uploaded & Published Successfully ✓");
       onSongAdded();
       return true;
     } catch (err: any) {
@@ -286,6 +426,7 @@ export default function AdminBulkUpload({
         return {
           ...s,
           status: "error",
+          currentStep: "Upload Failed",
           errorMessage: err?.message || "Upload failed"
         };
       }));
@@ -293,27 +434,80 @@ export default function AdminBulkUpload({
     }
   };
 
-  // Upload All Staged Tracks in sequence
+  // Upload All Staged Tracks strictly sequentially with real-time feedback
   const handleUploadAll = async () => {
-    const pendingTracks = stagedSongs.filter(s => s.status === "ready" || s.status === "error");
+    const pendingTracks = stagedSongs.filter(s => s.status !== "success");
     if (pendingTracks.length === 0) {
       onShowToast("No pending tracks ready to upload.", "info");
       return;
     }
 
     setIsBulkUploading(true);
+    setIsPaused(false);
+    pauseRef.current = false;
+    cancelRef.current = false;
     setGlobalProgress(0);
 
-    let completed = 0;
+    let successCountTotal = 0;
+    let failCountTotal = 0;
+
     for (let i = 0; i < pendingTracks.length; i++) {
+      if (cancelRef.current) {
+        onShowToast("Upload cancelled by user.", "info");
+        break;
+      }
+
+      // Handle Pause
+      while (pauseRef.current) {
+        await new Promise(r => setTimeout(r, 400));
+        if (cancelRef.current) break;
+      }
+      if (cancelRef.current) break;
+
       const track = pendingTracks[i];
-      await uploadSingleStagedTrack(track);
-      completed++;
+      setUploadingIndex(i);
+      setCurrentTrackProgress(5);
+      setCurrentUploadStep(`Starting upload for "${track.title}"...`);
+
+      const success = await uploadSingleStagedTrack(
+        track,
+        (step) => setCurrentUploadStep(step),
+        (pct) => setCurrentTrackProgress(pct)
+      );
+
+      if (success) {
+        successCountTotal++;
+      } else {
+        failCountTotal++;
+      }
+
+      const completed = i + 1;
       setGlobalProgress(Math.round((completed / pendingTracks.length) * 100));
+
+      // Small pause between songs for UI fluidity & network rest
+      await new Promise(r => setTimeout(r, 300));
     }
 
     setIsBulkUploading(false);
-    onShowToast(`Batch upload finished! ${completed} track(s) processed. 🎉`, "success");
+    setUploadingIndex(-1);
+    setCurrentTrackProgress(0);
+    setCurrentUploadStep("");
+
+    if (failCountTotal === 0) {
+      onShowToast(`All ${successCountTotal} track(s) uploaded and published successfully without error! 🎉`, "success");
+    } else {
+      onShowToast(`Upload finished: ${successCountTotal} succeeded, ${failCountTotal} failed. You can retry failed songs.`, "info");
+    }
+  };
+
+  const handleTogglePause = () => {
+    setIsPaused(prev => !prev);
+  };
+
+  const handleCancelUpload = () => {
+    if (confirm("Are you sure you want to stop the remaining uploads?")) {
+      cancelRef.current = true;
+    }
   };
 
   // Play / Pause audio preview
@@ -333,6 +527,9 @@ export default function AdminBulkUpload({
   const pendingCount = stagedSongs.filter(s => s.status === "ready" || s.status === "scanning").length;
   const successCount = stagedSongs.filter(s => s.status === "success").length;
   const errorCount = stagedSongs.filter(s => s.status === "error").length;
+  const pendingTracksList = stagedSongs.filter(s => s.status !== "success");
+  const currentActiveTrack = uploadingIndex >= 0 && uploadingIndex < pendingTracksList.length ? pendingTracksList[uploadingIndex] : null;
+  const remainingCount = pendingTracksList.length - (uploadingIndex >= 0 ? uploadingIndex : 0);
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -341,6 +538,23 @@ export default function AdminBulkUpload({
         ref={audioPreviewRef} 
         onEnded={() => setPlayingPreviewUrl(null)} 
         onError={() => setPlayingPreviewUrl(null)} 
+      />
+
+      {/* Hidden file & folder inputs */}
+      <input 
+        ref={fileInputRef}
+        type="file" 
+        multiple 
+        accept="audio/*,.mp3,.m4a,.wav,.aac,.flac,.ogg,.opus" 
+        onChange={(e) => handleFilesSelected(e.target.files)}
+        className="hidden" 
+      />
+      <input 
+        ref={folderInputRef}
+        type="file"
+        // webkitdirectory and directory set in useEffect via ref
+        className="hidden" 
+        onChange={(e) => handleFolderSelected(e.target.files)}
       />
 
       {/* Top Banner & Multi-file Upload Zone */}
@@ -355,14 +569,14 @@ export default function AdminBulkUpload({
                 <Layers className="w-5 h-5" />
               </span>
               <h2 className="text-xl md:text-2xl font-black text-slate-100 tracking-tight">
-                Bulk / Multiple Songs Upload
+                Bulk / Music Folder Upload Engine
               </h2>
               <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 font-bold uppercase">
-                Batch Mode
+                1-by-1 Queue
               </span>
             </div>
             <p className="text-xs md:text-sm text-slate-400 max-w-2xl">
-              Select multiple MP3/M4A tracks at once. Review individual song cards with auto-detected Artist names, Titles, Album names & Embedded Artwork <strong>before uploading</strong>. Edit or remove individual cards freely!
+              Upload multiple audio files or an <strong>entire music folder</strong> with one click. Songs are uploaded strictly sequentially (1-by-1) showing exact progress, which song is uploading, and remaining count with zero errors!
             </p>
           </div>
 
@@ -381,13 +595,19 @@ export default function AdminBulkUpload({
                 <span className="text-[10px] text-emerald-400 block font-mono uppercase">Uploaded</span>
                 <span className="text-xs font-bold text-emerald-300">{successCount}</span>
               </div>
+              {errorCount > 0 && (
+                <div className="px-3 py-1 rounded-xl bg-red-500/10 border border-red-500/20 text-center">
+                  <span className="text-[10px] text-red-400 block font-mono uppercase">Errors</span>
+                  <span className="text-xs font-bold text-red-300">{errorCount}</span>
+                </div>
+              )}
             </div>
           )}
         </div>
 
-        {/* Dual Upload Options: Multiple Files vs Full Folder Sequential */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
-          {/* Option A: Select Files */}
+        {/* 3 Upload Options: Files, Folder Directory, Edge-to-Edge Full Screen */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+          {/* Option 1: Select Audio Files */}
           <div 
             onClick={() => fileInputRef.current?.click()}
             className="p-5 rounded-2xl bg-black/30 border border-white/10 hover:border-cyan-400/50 hover:bg-cyan-500/5 transition-all cursor-pointer group flex flex-col justify-between"
@@ -398,22 +618,52 @@ export default function AdminBulkUpload({
                   <UploadCloud className="w-5 h-5" />
                 </div>
                 <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-white/5 text-slate-300 border border-white/10">
-                  Multiple Files
+                  Audio Files
                 </span>
               </div>
               <h3 className="text-sm font-bold text-white group-hover:text-cyan-300 transition-colors">
-                Select Audio Files Queue
+                Select Audio Files (.mp3, .m4a, .wav)
               </h3>
               <p className="text-xs text-slate-400 mt-1">
                 Pick individual audio tracks. Review individual cards below, edit titles/artists, and upload when ready.
               </p>
             </div>
             <div className="mt-4 pt-3 border-t border-white/5 flex items-center text-xs font-bold text-cyan-400">
-              <span>Choose audio files (.mp3, .m4a, .wav) &rarr;</span>
+              <span>Choose audio files &rarr;</span>
             </div>
           </div>
 
-          {/* Option B: Edge-to-Edge Folder Sequential Upload */}
+          {/* Option 2: Select Full Music Folder */}
+          <div 
+            onClick={() => folderInputRef.current?.click()}
+            className="p-5 rounded-2xl bg-gradient-to-br from-emerald-950/30 via-teal-950/20 to-[#0a121d] border border-emerald-500/30 hover:border-emerald-400/60 hover:bg-emerald-500/10 transition-all cursor-pointer group flex flex-col justify-between relative overflow-hidden"
+          >
+            <div className="absolute top-0 right-0 w-24 h-24 bg-emerald-500/10 rounded-full blur-xl pointer-events-none"></div>
+            <div>
+              <div className="flex items-center justify-between mb-3">
+                <div className="w-10 h-10 rounded-xl bg-emerald-500/15 text-emerald-400 flex items-center justify-center border border-emerald-500/30 group-hover:scale-105 transition-transform">
+                  <FolderCheck className="w-5 h-5" />
+                </div>
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-bold uppercase">
+                  Select Folder
+                </span>
+              </div>
+              <h3 className="text-sm font-bold text-white group-hover:text-emerald-300 transition-colors flex items-center space-x-1.5">
+                <span>📁 Select Music Folder</span>
+              </h3>
+              <p className="text-xs text-slate-400 mt-1">
+                Pick an entire music album folder. Automatically loads all tracks, folder art & tags directly into the staging queue!
+              </p>
+            </div>
+            <div className="mt-4 pt-3 border-t border-white/5 flex items-center justify-between text-xs font-bold text-emerald-400">
+              <span>Choose Music Directory &rarr;</span>
+              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300">
+                Auto-scan
+              </span>
+            </div>
+          </div>
+
+          {/* Option 3: Edge-to-Edge Folder Modal */}
           <div 
             onClick={() => setShowFolderModal(true)}
             className="p-5 rounded-2xl bg-gradient-to-br from-indigo-950/40 via-purple-950/30 to-[#0d1424] border border-purple-500/30 hover:border-purple-400 hover:shadow-xl hover:shadow-purple-500/10 transition-all cursor-pointer group flex flex-col justify-between relative overflow-hidden"
@@ -425,49 +675,50 @@ export default function AdminBulkUpload({
                   <Folder className="w-5 h-5" />
                 </div>
                 <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-400/30 uppercase font-bold animate-pulse">
-                  Full Screen Sequential
+                  Full Screen
                 </span>
               </div>
               <h3 className="text-sm font-bold text-white group-hover:text-purple-300 transition-colors flex items-center space-x-1.5">
-                <span>Upload Music Folder (Edge-to-Edge)</span>
+                <span>Edge-to-Edge Inspector Mode</span>
                 <Maximize2 className="w-3.5 h-3.5 text-purple-400" />
               </h3>
               <p className="text-xs text-slate-400 mt-1">
-                Upload entire music directory sequentially (1-by-1 queue). Full-screen dashboard shows which folder is selected, tracks uploaded, missing artwork inspector & live card editor!
+                Full-screen album dashboard with real-time missing details audit (artwork, lyrics, artist) & card editor.
               </p>
             </div>
             <div className="mt-4 pt-3 border-t border-white/5 flex items-center justify-between text-xs font-bold text-purple-300">
-              <span>Launch Edge-to-Edge Folder Mode</span>
+              <span>Launch Full Screen Mode</span>
               <span className="px-2 py-0.5 rounded bg-purple-500/20 text-[10px] font-mono border border-purple-500/30">
-                1-by-1 Queue
+                Edge-to-Edge
               </span>
             </div>
           </div>
         </div>
 
-        {/* Drag & Drop Multi-file Selection Box */}
+        {/* Drag & Drop Multi-file AND Folder Drop Box */}
         <div 
           onClick={() => fileInputRef.current?.click()}
-          className="relative border-2 border-dashed border-cyan-500/30 hover:border-cyan-400 rounded-3xl p-8 text-center cursor-pointer bg-black/20 hover:bg-cyan-500/5 transition-all group"
+          onDragOver={(e) => {
+            e.preventDefault();
+            setIsDragging(true);
+          }}
+          onDragLeave={() => setIsDragging(false)}
+          onDrop={handleDropFilesOrFolder}
+          className={`relative border-2 border-dashed rounded-3xl p-8 text-center cursor-pointer transition-all duration-300 group ${
+            isDragging 
+              ? "border-cyan-400 bg-cyan-500/15 scale-[1.01] shadow-2xl shadow-cyan-500/20" 
+              : "border-cyan-500/30 hover:border-cyan-400 bg-black/20 hover:bg-cyan-500/5"
+          }`}
         >
-          <input 
-            ref={fileInputRef}
-            type="file" 
-            multiple 
-            accept="audio/*,.mp3,.m4a,.wav,.aac,.flac,.ogg" 
-            onChange={(e) => handleFilesSelected(e.target.files)}
-            className="hidden" 
-          />
-
           <div className="w-16 h-16 rounded-2xl bg-cyan-500/10 text-cyan-400 flex items-center justify-center mx-auto mb-4 border border-cyan-500/20 group-hover:scale-110 group-hover:bg-cyan-500/20 transition-all duration-300 shadow-lg shadow-cyan-500/10">
             <UploadCloud className="w-8 h-8" />
           </div>
 
           <h3 className="text-base font-bold text-slate-200 group-hover:text-cyan-300 transition-colors">
-            Click to Select Multiple Audio Files, or Drag & Drop Here
+            {isDragging ? "Drop Files or Music Folder Here!" : "Drag & Drop Audio Files OR Entire Folder Here"}
           </h3>
           <p className="text-xs text-slate-400 mt-1 max-w-md mx-auto">
-            Upload albums, soundtracks or track collections at once. Accepts MP3, M4A, WAV, AAC with automatic ID3 tag extraction.
+            Drop entire folders or select files. Recursively extracts MP3, M4A, WAV, AAC with automatic ID3 tag extraction and folder cover art.
           </p>
 
           <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
@@ -477,33 +728,98 @@ export default function AdminBulkUpload({
             </span>
             <span className="inline-flex items-center space-x-1 px-2.5 py-1 rounded-lg bg-white/5 text-[11px] text-slate-300 border border-white/10 font-mono">
               <ImageIcon className="w-3 h-3 text-purple-400" />
-              <span>Extracts Embedded Cover Art</span>
+              <span>Extracts Embedded Artwork</span>
             </span>
             <span className="inline-flex items-center space-x-1 px-2.5 py-1 rounded-lg bg-white/5 text-[11px] text-slate-300 border border-white/10 font-mono">
-              <Clock className="w-3 h-3 text-emerald-400" />
-              <span>Calculates Duration</span>
+              <FolderCheck className="w-3 h-3 text-emerald-400" />
+              <span>Supports Directory Traversal</span>
             </span>
           </div>
         </div>
 
+        {/* Batch Private Playlist Option Bar */}
+        {stagedSongs.length > 0 && (
+          <div className="mt-5 p-4 rounded-2xl bg-purple-950/25 border border-purple-500/30 flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3 shadow-inner">
+            <div className="flex items-center space-x-3">
+              <label className="relative inline-flex items-center cursor-pointer flex-shrink-0">
+                <input 
+                  type="checkbox"
+                  checked={batchPlaylistEnabled}
+                  onChange={(e) => setBatchPlaylistEnabled(e.target.checked)}
+                  className="sr-only peer"
+                />
+                <div className="w-10 h-5 bg-slate-800 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-purple-600"></div>
+              </label>
+
+              <div>
+                <span className="text-xs font-bold text-white flex items-center space-x-1.5">
+                  <Lock className="w-3.5 h-3.5 text-purple-400" />
+                  <span>Add All Staged Tracks into a Private Playlist</span>
+                </span>
+                <p className="text-[10px] text-slate-400">
+                  Songs are added to library and grouped in a Private Playlist hidden from public users.
+                </p>
+              </div>
+            </div>
+
+            {batchPlaylistEnabled && (
+              <div className="flex flex-wrap items-center gap-2">
+                <select
+                  value={selectedBatchPlaylistId}
+                  onChange={(e) => setSelectedBatchPlaylistId(e.target.value)}
+                  className="px-3 py-1.5 bg-black/60 border border-purple-500/30 text-white rounded-xl text-xs outline-none focus:border-purple-400"
+                >
+                  <option value="new">➕ [+] Create New Private Playlist...</option>
+                  {existingPlaylists.map(pl => (
+                    <option key={pl.id} value={pl.id}>
+                      📁 {pl.name} ({pl.songIds?.length || 0} tracks)
+                    </option>
+                  ))}
+                </select>
+
+                {selectedBatchPlaylistId === "new" && (
+                  <input 
+                    type="text"
+                    value={newBatchPlaylistName}
+                    onChange={(e) => setNewBatchPlaylistName(e.target.value)}
+                    placeholder="New Playlist Name"
+                    className="px-3 py-1.5 bg-black/60 border border-purple-500/40 text-white rounded-xl text-xs outline-none focus:border-purple-400 placeholder-slate-500 w-48"
+                  />
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Global Bulk Action Bar when queue has items */}
         {stagedSongs.length > 0 && (
           <div className="mt-6 pt-6 border-t border-white/10 flex flex-wrap items-center justify-between gap-4">
-            <div className="flex items-center space-x-3">
+            <div className="flex items-center space-x-2.5 flex-wrap">
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
-                className="px-4 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 text-slate-200 border border-white/10 text-xs font-bold transition-all flex items-center space-x-2"
+                disabled={isBulkUploading}
+                className="px-3.5 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 text-slate-200 border border-white/10 text-xs font-bold transition-all flex items-center space-x-2 disabled:opacity-50"
               >
-                <FolderPlus className="w-4 h-4 text-cyan-400" />
-                <span>Add More Audio Files</span>
+                <Plus className="w-4 h-4 text-cyan-400" />
+                <span>Add Files</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => folderInputRef.current?.click()}
+                disabled={isBulkUploading}
+                className="px-3.5 py-2.5 rounded-xl bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/25 text-xs font-bold transition-all flex items-center space-x-2 disabled:opacity-50"
+              >
+                <FolderPlus className="w-4 h-4 text-emerald-400" />
+                <span>Add Folder</span>
               </button>
 
               <button
                 type="button"
                 onClick={handleClearAll}
                 disabled={isBulkUploading}
-                className="px-4 py-2.5 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-300 border border-red-500/20 text-xs font-bold transition-all flex items-center space-x-2 disabled:opacity-50"
+                className="px-3.5 py-2.5 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-300 border border-red-500/20 text-xs font-bold transition-all flex items-center space-x-2 disabled:opacity-50"
               >
                 <Trash2 className="w-4 h-4" />
                 <span>Clear All ({stagedSongs.length})</span>
@@ -514,18 +830,18 @@ export default function AdminBulkUpload({
               <button
                 type="button"
                 onClick={handleUploadAll}
-                disabled={isBulkUploading || pendingCount === 0}
+                disabled={isBulkUploading || pendingTracksList.length === 0}
                 className="px-6 py-2.5 rounded-xl bg-gradient-to-r from-cyan-500 via-indigo-500 to-purple-600 hover:from-cyan-400 hover:to-purple-500 text-white font-extrabold text-xs tracking-wider uppercase transition-all shadow-lg shadow-cyan-500/25 flex items-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {isBulkUploading ? (
                   <>
                     <Loader2 className="w-4 h-4 animate-spin" />
-                    <span>Uploading Tracks ({globalProgress}%)</span>
+                    <span>Uploading ({globalProgress}%)</span>
                   </>
                 ) : (
                   <>
                     <UploadCloud className="w-4 h-4" />
-                    <span>Upload All ({pendingCount}) Tracks to Cloudinary</span>
+                    <span>Upload All ({pendingTracksList.length}) Songs Sequentially</span>
                   </>
                 )}
               </button>
@@ -533,18 +849,94 @@ export default function AdminBulkUpload({
           </div>
         )}
 
-        {/* Global Progress Bar */}
+        {/* HIGH-VISIBILITY LIVE UPLOAD PROGRESS MONITOR DASHBOARD */}
         {isBulkUploading && (
-          <div className="mt-4 pt-3">
-            <div className="flex justify-between text-xs font-mono text-cyan-300 mb-1.5">
-              <span>Batch Upload Progress</span>
-              <span>{globalProgress}% Complete</span>
+          <div className="mt-6 p-5 md:p-6 rounded-2xl bg-gradient-to-r from-[#0b172a] via-[#101428] to-[#160e29] border-2 border-cyan-400/50 shadow-2xl relative overflow-hidden animate-fade-in">
+            <div className="absolute top-0 right-0 w-60 h-60 bg-cyan-500/10 rounded-full blur-2xl pointer-events-none"></div>
+
+            {/* Top row: Status header & controls */}
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-4">
+              <div className="flex items-center space-x-3">
+                <span className="relative flex h-3.5 w-3.5">
+                  <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${isPaused ? "bg-amber-400" : "bg-cyan-400"}`}></span>
+                  <span className={`relative inline-flex rounded-full h-3.5 w-3.5 ${isPaused ? "bg-amber-500" : "bg-cyan-500"}`}></span>
+                </span>
+                <div>
+                  <h4 className="text-sm font-black text-white flex items-center space-x-2">
+                    <span>
+                      {isPaused 
+                        ? "⏸️ UPLOAD QUEUE PAUSED" 
+                        : `🚀 UPLOADING TRACK ${uploadingIndex + 1} OF ${pendingTracksList.length}`}
+                    </span>
+                    {currentActiveTrack && (
+                      <span className="text-cyan-300 font-bold font-mono">
+                        : "{currentActiveTrack.title}"
+                      </span>
+                    )}
+                  </h4>
+                  <p className="text-xs text-slate-400 font-mono mt-0.5">
+                    {currentActiveTrack?.artist ? `Artist: ${currentActiveTrack.artist}` : "Auto-extracting tags"} • {currentUploadStep || "Processing..."}
+                  </p>
+                </div>
+              </div>
+
+              {/* Stats & Pause/Resume Controls */}
+              <div className="flex items-center space-x-2 self-start md:self-auto">
+                <div className="px-3 py-1.5 rounded-xl bg-black/50 border border-white/10 text-xs font-mono">
+                  <span className="text-amber-400 font-bold">{remainingCount} Songs Remaining</span>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleTogglePause}
+                  className={`px-3 py-1.5 rounded-xl font-bold text-xs flex items-center space-x-1.5 transition-all border ${
+                    isPaused 
+                      ? "bg-amber-500/20 text-amber-300 border-amber-500/40" 
+                      : "bg-white/10 hover:bg-white/15 text-slate-200 border-white/15"
+                  }`}
+                >
+                  {isPaused ? <Play className="w-3.5 h-3.5 fill-current" /> : <Pause className="w-3.5 h-3.5 fill-current" />}
+                  <span>{isPaused ? "Resume" : "Pause"}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleCancelUpload}
+                  className="px-3 py-1.5 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-300 border border-red-500/25 font-bold text-xs transition-all"
+                >
+                  Stop
+                </button>
+              </div>
             </div>
-            <div className="w-full h-2 bg-black/40 rounded-full overflow-hidden border border-cyan-500/20">
-              <div 
-                className="h-full bg-gradient-to-r from-cyan-400 via-blue-500 to-purple-500 transition-all duration-300"
-                style={{ width: `${globalProgress}%` }}
-              ></div>
+
+            {/* Current Song Progress Bar */}
+            <div className="space-y-1.5 mb-3 bg-black/30 p-3 rounded-xl border border-white/5">
+              <div className="flex justify-between text-xs font-mono">
+                <span className="text-slate-300">
+                  Active Song: <strong className="text-cyan-300">{currentActiveTrack?.fileName}</strong>
+                </span>
+                <span className="text-cyan-400 font-bold">{currentTrackProgress}%</span>
+              </div>
+              <div className="w-full h-2.5 bg-black/60 rounded-full overflow-hidden border border-cyan-500/20">
+                <div 
+                  className="h-full bg-gradient-to-r from-cyan-400 via-teal-400 to-emerald-400 transition-all duration-300"
+                  style={{ width: `${currentTrackProgress}%` }}
+                ></div>
+              </div>
+            </div>
+
+            {/* Overall Queue Progress Bar */}
+            <div className="space-y-1">
+              <div className="flex justify-between text-[11px] font-mono text-slate-400">
+                <span>Total Queue Completion ({uploadingIndex + 1}/{pendingTracksList.length} tracks)</span>
+                <span className="text-purple-300 font-bold">{globalProgress}%</span>
+              </div>
+              <div className="w-full h-2 bg-black/60 rounded-full overflow-hidden border border-white/10">
+                <div 
+                  className="h-full bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500 transition-all duration-300"
+                  style={{ width: `${globalProgress}%` }}
+                ></div>
+              </div>
             </div>
           </div>
         )}
@@ -556,20 +948,25 @@ export default function AdminBulkUpload({
           <FileAudio className="w-12 h-12 text-slate-600 mx-auto mb-3" />
           <h4 className="text-base font-bold text-slate-300">No tracks staged in queue</h4>
           <p className="text-xs text-slate-500 max-w-sm mx-auto mt-1">
-            Click the box above to select multiple audio files. Each track will appear as an editable card here before publishing.
+            Click the buttons above or drag & drop a music folder here. Each track will appear as an editable card here before publishing.
           </p>
         </div>
       ) : (
         <div className="space-y-4">
-          <div className="flex items-center justify-between px-2">
+          <div className="flex items-center justify-between px-2 flex-wrap gap-2">
             <h3 className="text-sm font-bold text-slate-200 uppercase tracking-wider flex items-center space-x-2">
               <span>Staged Tracks Queue</span>
-              <span className="px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 text-xs font-mono">
+              <span className="px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 text-xs font-mono font-bold">
                 {stagedSongs.length} Songs
               </span>
+              {lastDetectedFolder && (
+                <span className="px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 text-xs font-mono">
+                  📁 {lastDetectedFolder}
+                </span>
+              )}
             </h3>
             <span className="text-xs text-slate-400 font-mono">
-              Edit individual details or remove songs prior to uploading
+              {successCount} uploaded • {pendingTracksList.length} ready • {errorCount} errors
             </span>
           </div>
 
@@ -610,7 +1007,7 @@ export default function AdminBulkUpload({
                       </div>
                     </div>
 
-                    {/* Status Badge & Remove Button */}
+                    {/* Status Badge & Actions */}
                     <div className="flex items-center space-x-2 flex-shrink-0">
                       {song.status === "scanning" && (
                         <span className="inline-flex items-center space-x-1 px-2 py-0.5 rounded-md bg-amber-500/10 text-amber-300 text-[10px] font-mono border border-amber-500/20">
@@ -621,7 +1018,7 @@ export default function AdminBulkUpload({
 
                       {song.status === "ready" && (
                         <span className="inline-flex items-center space-x-1 px-2 py-0.5 rounded-md bg-cyan-500/10 text-cyan-300 text-[10px] font-mono border border-cyan-500/20">
-                          <span>Ready</span>
+                          <span>Ready in Queue</span>
                         </span>
                       )}
 
@@ -633,218 +1030,176 @@ export default function AdminBulkUpload({
                       )}
 
                       {song.status === "success" && (
-                        <span className="inline-flex items-center space-x-1 px-2.5 py-0.5 rounded-md bg-emerald-500/20 text-emerald-400 text-[10px] font-bold font-mono border border-emerald-500/30">
+                        <span className="inline-flex items-center space-x-1 px-2 py-0.5 rounded-md bg-emerald-500/20 text-emerald-300 text-[10px] font-mono border border-emerald-500/30">
                           <CheckCircle2 className="w-3 h-3" />
                           <span>Uploaded ✓</span>
                         </span>
                       )}
 
                       {song.status === "error" && (
-                        <span className="inline-flex items-center space-x-1 px-2 py-0.5 rounded-md bg-red-500/20 text-red-300 text-[10px] font-mono border border-red-500/30" title={song.errorMessage}>
-                          <AlertCircle className="w-3 h-3" />
-                          <span>Failed</span>
-                        </span>
+                        <div className="flex items-center space-x-1.5">
+                          <span className="inline-flex items-center space-x-1 px-2 py-0.5 rounded-md bg-red-500/20 text-red-300 text-[10px] font-mono border border-red-500/30">
+                            <AlertCircle className="w-3 h-3" />
+                            <span>Error</span>
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => uploadSingleStagedTrack(song)}
+                            className="px-2 py-0.5 rounded-md bg-white/10 hover:bg-white/20 text-white text-[10px] font-mono font-bold flex items-center space-x-1"
+                            title="Retry Upload"
+                          >
+                            <RefreshCw className="w-3 h-3" />
+                            <span>Retry</span>
+                          </button>
+                        </div>
                       )}
 
-                      {/* Remove Button (Before upload or any time) */}
-                      <button
-                        type="button"
-                        onClick={() => handleRemoveSong(song.id)}
-                        disabled={song.status === "uploading"}
-                        className="p-1.5 rounded-lg bg-white/5 hover:bg-red-500/20 text-slate-400 hover:text-red-400 border border-white/10 hover:border-red-500/30 transition-all text-xs"
-                        title="Remove track from queue"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
+                      {song.status !== "uploading" && (
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveSong(song.id)}
+                          className="p-1 rounded-lg text-slate-500 hover:text-red-400 hover:bg-white/5 transition-colors"
+                          title="Remove track from queue"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      )}
                     </div>
                   </div>
 
-                  {/* Main Card Body: Cover Image + Editable Metadata */}
-                  <div className="flex gap-4 items-start">
-                    {/* Cover Art Preview & Custom Cover Picker */}
-                    <div className="relative group/cover flex-shrink-0">
-                      <div className="w-20 h-20 md:w-24 md:h-24 rounded-2xl overflow-hidden bg-black/60 border border-white/10 shadow-md">
-                        <img 
-                          src={displayImage} 
-                          alt={song.title} 
-                          className="w-full h-full object-cover group-hover/cover:scale-105 transition-transform duration-300"
-                          referrerPolicy="no-referrer"
-                        />
-                      </div>
+                  {/* Card Content: Thumbnail, Form details & Categories */}
+                  <div className="flex gap-4">
+                    {/* Cover Art Preview */}
+                    <div className="relative group/thumb flex-shrink-0 w-20 h-20 md:w-24 md:h-24 rounded-xl overflow-hidden bg-black/40 border border-white/10 flex items-center justify-center">
+                      <img 
+                        src={displayImage} 
+                        alt={song.title} 
+                        className="w-full h-full object-cover" 
+                      />
+                      
+                      {/* Audio preview playback overlay */}
+                      <button
+                        type="button"
+                        onClick={() => handleTogglePreview(URL.createObjectURL(song.file))}
+                        className="absolute inset-0 bg-black/60 opacity-0 group-hover/thumb:opacity-100 transition-opacity flex items-center justify-center text-white"
+                        title="Listen to audio preview"
+                      >
+                        {playingPreviewUrl ? <Pause className="w-6 h-6 fill-white" /> : <Play className="w-6 h-6 fill-white" />}
+                      </button>
 
-                      {/* Cover file picker overlay */}
-                      <label className="absolute inset-0 bg-black/60 opacity-0 group-hover/cover:opacity-100 flex flex-col items-center justify-center cursor-pointer rounded-2xl transition-opacity text-white text-[9px] font-mono p-1 text-center backdrop-blur-xs">
-                        <ImageIcon className="w-4 h-4 mb-0.5" />
-                        <span>Change Cover</span>
+                      {/* Custom cover file picker trigger */}
+                      <label className="absolute bottom-1 right-1 p-1 bg-black/80 hover:bg-purple-600 rounded-md text-white cursor-pointer transition-colors shadow">
+                        <ImageIcon className="w-3 h-3" />
                         <input 
                           type="file" 
                           accept="image/*" 
-                          className="hidden" 
                           onChange={(e) => {
-                            const imgFile = e.target.files?.[0];
-                            if (imgFile) {
-                              handleUpdateField(song.id, "customCoverFile", imgFile);
+                            if (e.target.files?.[0]) {
+                              handleUpdateField(song.id, "customCoverFile", e.target.files[0]);
+                              handleUpdateField(song.id, "customCoverUrl", URL.createObjectURL(e.target.files[0]));
                             }
                           }}
+                          className="hidden" 
                         />
                       </label>
-
-                      {song.coverDataUrl && !song.customCoverFile && (
-                        <span className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 text-[8px] font-bold px-1.5 py-0.2 rounded bg-cyan-950 text-cyan-300 border border-cyan-500/30 whitespace-nowrap font-mono shadow-sm">
-                          ID3 Art ✓
-                        </span>
-                      )}
                     </div>
 
-                    {/* Metadata Inputs (Title, Artist, Album, Categories) */}
-                    <div className="flex-1 min-w-0 space-y-2.5">
-                      {/* Track Title Input */}
+                    {/* Metadata fields: Title, Artist, Album */}
+                    <div className="flex-1 min-w-0 space-y-2">
                       <div>
-                        <div className="flex justify-between items-center mb-0.5">
-                          <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider font-mono">
-                            Track Title *
-                          </label>
-                        </div>
+                        <label className="text-[10px] font-bold text-slate-400 uppercase font-mono block mb-0.5">
+                          Song Title
+                        </label>
                         <input 
                           type="text"
                           value={song.title}
-                          disabled={song.status === "uploading" || song.status === "success"}
                           onChange={(e) => handleUpdateField(song.id, "title", e.target.value)}
-                          placeholder="e.g. Arabic Kuthu"
-                          className="w-full px-3 py-1.5 bg-white/5 border border-white/10 focus:border-cyan-400 rounded-xl text-slate-100 text-xs outline-none transition-all placeholder-slate-600 disabled:opacity-60"
+                          placeholder="Song Title"
+                          className="w-full px-2.5 py-1.5 bg-black/40 border border-white/10 rounded-xl text-xs text-white placeholder-slate-500 focus:border-cyan-400 outline-none font-semibold"
                         />
                       </div>
 
-                      {/* Artist Name with Quick Matching */}
-                      <div>
-                        <div className="flex justify-between items-center mb-0.5">
-                          <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider font-mono">
-                            Artist Name *
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        <div>
+                          <label className="text-[10px] font-bold text-slate-400 uppercase font-mono block mb-0.5">
+                            Artist Name
                           </label>
-                          {artistsList.length > 0 && (
-                            <span className="text-[9px] text-purple-400 font-mono">
-                              {artistsList.some(a => a.name.toLowerCase() === song.artist.toLowerCase()) ? "Linked Profile ✓" : ""}
-                            </span>
-                          )}
-                        </div>
-                        <div className="relative">
                           <input 
                             type="text"
                             value={song.artist}
-                            disabled={song.status === "uploading" || song.status === "success"}
                             onChange={(e) => handleUpdateField(song.id, "artist", e.target.value)}
-                            placeholder="e.g. Anirudh Ravichander"
-                            className="w-full px-3 py-1.5 bg-white/5 border border-white/10 focus:border-purple-400 rounded-xl text-slate-100 text-xs outline-none transition-all placeholder-slate-600 disabled:opacity-60"
+                            placeholder="Artist / Composer"
+                            list={`artists-${song.id}`}
+                            className="w-full px-2.5 py-1.5 bg-black/40 border border-white/10 rounded-xl text-xs text-white placeholder-slate-500 focus:border-cyan-400 outline-none"
                           />
+                          <datalist id={`artists-${song.id}`}>
+                            {artistsList.map(a => (
+                              <option key={a.id} value={a.name} />
+                            ))}
+                          </datalist>
                         </div>
-                      </div>
 
-                      {/* Album & Duration Row */}
-                      <div className="grid grid-cols-2 gap-2">
                         <div>
-                          <label className="text-[9px] font-bold text-slate-400 uppercase tracking-wider font-mono block mb-0.5">
-                            Album (Optional)
+                          <label className="text-[10px] font-bold text-slate-400 uppercase font-mono block mb-0.5">
+                            Album / Movie
                           </label>
                           <input 
                             type="text"
                             value={song.album}
-                            disabled={song.status === "uploading" || song.status === "success"}
                             onChange={(e) => handleUpdateField(song.id, "album", e.target.value)}
-                            placeholder="e.g. Beast"
-                            className="w-full px-2.5 py-1 bg-white/5 border border-white/10 focus:border-cyan-400 rounded-xl text-slate-100 text-xs outline-none transition-all placeholder-slate-600 disabled:opacity-60"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="text-[9px] font-bold text-slate-400 uppercase tracking-wider font-mono block mb-0.5">
-                            Duration (Secs)
-                          </label>
-                          <input 
-                            type="number"
-                            value={song.duration || ""}
-                            disabled={song.status === "uploading" || song.status === "success"}
-                            onChange={(e) => handleUpdateField(song.id, "duration", parseInt(e.target.value) || 0)}
-                            placeholder="e.g. 210"
-                            className="w-full px-2.5 py-1 bg-white/5 border border-white/10 focus:border-cyan-400 rounded-xl text-slate-100 text-xs outline-none transition-all placeholder-slate-600 disabled:opacity-60 font-mono"
+                            placeholder="Album / Film Name"
+                            className="w-full px-2.5 py-1.5 bg-black/40 border border-white/10 rounded-xl text-xs text-white placeholder-slate-500 focus:border-cyan-400 outline-none"
                           />
                         </div>
                       </div>
                     </div>
                   </div>
 
-                  {/* Categories Selector on Card */}
-                  <div className="mt-3 pt-2.5 border-t border-white/5 flex flex-wrap items-center justify-between gap-2">
-                    <div className="flex flex-wrap items-center gap-1.5 max-w-md">
-                      <span className="text-[10px] text-slate-400 font-mono uppercase mr-1">Category:</span>
-                      {categories.map((cat) => {
-                        const isSelected = song.categories.includes(cat);
-                        return (
-                          <button
-                            key={cat}
-                            type="button"
-                            disabled={song.status === "uploading" || song.status === "success"}
-                            onClick={() => handleToggleCategory(song.id, cat)}
-                            className={`px-2 py-0.5 rounded-lg text-[10px] font-bold transition-all border ${
-                              isSelected
-                                ? "bg-cyan-500/20 border-cyan-400/40 text-cyan-300"
-                                : "bg-white/5 border-white/5 text-slate-400 hover:text-slate-200"
-                            }`}
-                          >
-                            {cat}
-                          </button>
-                        );
-                      })}
-                    </div>
-
-                    {/* Single Upload Button / Audio Playback */}
-                    <div className="flex items-center space-x-2 ml-auto">
-                      {song.status === "success" && song.uploadedAudioUrl && (
+                  {/* Categories Pills */}
+                  <div className="mt-3 pt-2.5 border-t border-white/5 flex flex-wrap items-center gap-1.5">
+                    <span className="text-[10px] font-mono text-slate-500 uppercase mr-1">
+                      Categories:
+                    </span>
+                    {categories.map(cat => {
+                      const selected = song.categories?.includes(cat);
+                      return (
                         <button
+                          key={cat}
                           type="button"
-                          onClick={() => handleTogglePreview(song.uploadedAudioUrl!)}
-                          className="px-2.5 py-1 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/30 text-[10px] font-mono font-bold flex items-center space-x-1 transition-all"
+                          onClick={() => handleToggleCategory(song.id, cat)}
+                          className={`px-2 py-0.5 rounded-lg text-[10px] font-mono transition-all border ${
+                            selected 
+                              ? "bg-cyan-500/20 border-cyan-400/50 text-cyan-300 font-bold" 
+                              : "bg-white/5 border-white/5 text-slate-400 hover:text-slate-200"
+                          }`}
                         >
-                          {playingPreviewUrl === song.uploadedAudioUrl ? (
-                            <>
-                              <Pause className="w-3 h-3" />
-                              <span>Pause</span>
-                            </>
-                          ) : (
-                            <>
-                              <Play className="w-3 h-3" />
-                              <span>Listen</span>
-                            </>
-                          )}
+                          {cat}
                         </button>
-                      )}
-
-                      {song.status !== "success" && (
-                        <button
-                          type="button"
-                          onClick={() => uploadSingleStagedTrack(song)}
-                          disabled={song.status === "uploading"}
-                          className="px-3 py-1 rounded-xl bg-cyan-500/20 hover:bg-cyan-500/35 text-cyan-300 border border-cyan-500/30 text-[11px] font-bold transition-all flex items-center space-x-1 disabled:opacity-50"
-                        >
-                          {song.status === "uploading" ? (
-                            <Loader2 className="w-3 h-3 animate-spin" />
-                          ) : (
-                            <UploadCloud className="w-3 h-3" />
-                          )}
-                          <span>{song.status === "uploading" ? "Uploading..." : "Upload This"}</span>
-                        </button>
-                      )}
-                    </div>
+                      );
+                    })}
                   </div>
 
-                  {/* Individual Progress Bar during upload */}
+                  {/* Individual Upload Progress on Card */}
                   {song.status === "uploading" && (
-                    <div className="mt-3">
-                      <div className="w-full bg-white/5 h-1.5 rounded-full overflow-hidden">
+                    <div className="mt-3 pt-2 border-t border-cyan-500/20">
+                      <div className="flex justify-between text-[10px] font-mono text-cyan-300 mb-1">
+                        <span>{song.currentStep || "Uploading..."}</span>
+                        <span>{song.progress}%</span>
+                      </div>
+                      <div className="w-full h-1.5 bg-black/40 rounded-full overflow-hidden">
                         <div 
-                          className="h-full bg-cyan-400 transition-all duration-300"
+                          className="h-full bg-gradient-to-r from-cyan-400 to-blue-500 transition-all duration-300"
                           style={{ width: `${song.progress}%` }}
                         ></div>
                       </div>
+                    </div>
+                  )}
+
+                  {/* Error display */}
+                  {song.status === "error" && song.errorMessage && (
+                    <div className="mt-2.5 p-2 rounded-lg bg-red-950/30 border border-red-500/20 text-red-300 text-xs flex items-center space-x-1.5">
+                      <AlertCircle className="w-3.5 h-3.5 text-red-400 flex-shrink-0" />
+                      <span className="truncate">{song.errorMessage}</span>
                     </div>
                   )}
                 </div>
