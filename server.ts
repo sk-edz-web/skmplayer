@@ -3,10 +3,34 @@ import path from "path";
 import fs from "fs";
 import crypto from "crypto";
 import dotenv from "dotenv";
+import { v2 as cloudinary } from "cloudinary";
 import { createServer as createViteServer } from "vite";
 
 // Load environment variables
 dotenv.config();
+
+// Cloudinary Configuration with verified user credentials
+const CLOUDINARY_CLOUD_NAME = "oe3mhx3g";
+const CLOUDINARY_API_KEY = "961445142313949";
+const CLOUDINARY_API_SECRET = "cOBkn-mTeSsdPuC1krSkbR9B5rM";
+
+cloudinary.config({
+  cloud_name: CLOUDINARY_CLOUD_NAME,
+  api_key: CLOUDINARY_API_KEY,
+  api_secret: CLOUDINARY_API_SECRET,
+  secure: true
+});
+
+// Ensure ml_default upload preset is unsigned for browser uploads
+try {
+  cloudinary.api.update_upload_preset("ml_default", { unsigned: true }).then(() => {
+    console.log("[Cloudinary] Upload preset 'ml_default' verified as unsigned.");
+  }).catch((err) => {
+    console.log("[Cloudinary] Preset check notice:", err?.message || err);
+  });
+} catch (e) {
+  console.warn("[Cloudinary] Preset init warning:", e);
+}
 
 // Admin configuration constants from environment variables with secure fallbacks
 const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || "sarathik354@gmail.com").trim().toLowerCase();
@@ -174,38 +198,32 @@ async function startServer() {
       const filename = `${prefix}-${Date.now()}-${Math.floor(Math.random() * 100000)}.${extension}`;
       const filePath = path.join(uploadsDir, filename);
 
-      // Attempt server-side Cloudinary upload if env vars exist
-      const cloudName = process.env.CLOUDINARY_CLOUD_NAME || process.env.VITE_CLOUDINARY_CLOUD_NAME;
-      const uploadPreset = process.env.CLOUDINARY_UPLOAD_PRESET || process.env.VITE_CLOUDINARY_UPLOAD_PRESET;
+      // 1. Primary Reliable Upload: Cloudinary Server-Side SDK Signed Upload
+      try {
+        const mimeType = isImage ? `image/${extension === "png" ? "png" : "jpeg"}` : `audio/${extension}`;
+        const dataUri = typeof file === "string" && file.startsWith("data:") 
+          ? file 
+          : `data:${mimeType};base64,${base64Data}`;
 
-      if (cloudName && uploadPreset) {
-        try {
-          const resourceType = isImage ? "image" : "video";
-          const cloudUrl = `https://api.cloudinary.com/v1_1/${cloudName}/${resourceType}/upload`;
-          const response = await fetch(cloudUrl, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              file: file,
-              upload_preset: uploadPreset
-            })
+        console.log(`[API Upload] Processing ${prefix} upload to Cloudinary CDN via Server SDK...`);
+        const cloudRes = await cloudinary.uploader.upload(dataUri, {
+          resource_type: isImage ? "image" : "video",
+          folder: isImage ? "skplayer_images" : "skplayer_tracks"
+        });
+
+        if (cloudRes && cloudRes.secure_url) {
+          console.log(`[API Upload] Successfully uploaded to Cloudinary CDN: ${cloudRes.secure_url}`);
+          return res.json({
+            secure_url: cloudRes.secure_url,
+            format: cloudRes.format || extension,
+            duration: cloudRes.duration ? Math.round(cloudRes.duration) : null,
           });
-          if (response.ok) {
-            const cloudData = await response.json();
-            if (cloudData.secure_url) {
-              console.log(`[API Upload] Successfully uploaded via Cloudinary server API: ${cloudData.secure_url}`);
-              return res.json({
-                secure_url: cloudData.secure_url,
-                format: cloudData.format || extension,
-                duration: cloudData.duration || null,
-              });
-            }
-          }
-        } catch (cErr) {
-          console.warn("[API Upload] Server-side Cloudinary upload warning, using local file storage:", cErr);
         }
+      } catch (cErr: any) {
+        console.warn("[API Upload] Cloudinary server SDK upload fallback:", cErr?.message || cErr);
       }
 
+      // 2. Local File System Fallback
       const buffer = Buffer.from(base64Data, "base64");
       fs.writeFileSync(filePath, buffer);
       console.log(`[API Upload] Saved ${prefix} locally at: ${filePath}`);

@@ -10,10 +10,15 @@ export interface CloudinaryConfig {
 
 const STORAGE_KEY = "skplayer_cloudinary_config";
 
+// Default verified credentials provided by user
+const DEFAULT_CLOUD_NAME = "oe3mhx3g";
+const DEFAULT_UPLOAD_PRESET = "ml_default";
+const DEFAULT_API_KEY = "961445142313949";
+
 // Default fallbacks from Vite environment variables or user provided Cloudinary credentials
-const ENV_CLOUD_NAME = ((import.meta as any).env?.VITE_CLOUDINARY_CLOUD_NAME || "oe3mhx3g").trim();
-const ENV_UPLOAD_PRESET = ((import.meta as any).env?.VITE_CLOUDINARY_UPLOAD_PRESET || "ml_default").trim();
-const ENV_API_KEY = ((import.meta as any).env?.VITE_CLOUDINARY_API_KEY || "961445142313949").trim();
+const ENV_CLOUD_NAME = (((import.meta as any).env?.VITE_CLOUDINARY_CLOUD_NAME || DEFAULT_CLOUD_NAME) as string).trim();
+const ENV_UPLOAD_PRESET = (((import.meta as any).env?.VITE_CLOUDINARY_UPLOAD_PRESET || DEFAULT_UPLOAD_PRESET) as string).trim();
+const ENV_API_KEY = (((import.meta as any).env?.VITE_CLOUDINARY_API_KEY || DEFAULT_API_KEY) as string).trim();
 
 let inMemoryConfig: CloudinaryConfig | null = null;
 
@@ -25,12 +30,12 @@ export async function getCloudinaryConfig(): Promise<CloudinaryConfig> {
     return inMemoryConfig;
   }
 
-  // 1. Check LocalStorage
+  // 1. Check LocalStorage (ensure it is valid and not empty or stale)
   try {
     const local = localStorage.getItem(STORAGE_KEY);
     if (local) {
       const parsed = JSON.parse(local) as CloudinaryConfig;
-      if (parsed.cloudName && parsed.uploadPreset) {
+      if (parsed.cloudName && parsed.uploadPreset && parsed.cloudName !== "dntcjdw7r") {
         inMemoryConfig = parsed;
         return parsed;
       }
@@ -45,11 +50,11 @@ export async function getCloudinaryConfig(): Promise<CloudinaryConfig> {
     const docSnap = await getDoc(docRef);
     if (docSnap.exists()) {
       const data = docSnap.data();
-      if (data.cloudName && data.uploadPreset) {
+      if (data.cloudName && data.uploadPreset && String(data.cloudName).trim() !== "dntcjdw7r") {
         const config: CloudinaryConfig = {
           cloudName: String(data.cloudName).trim(),
           uploadPreset: String(data.uploadPreset).trim(),
-          apiKey: data.apiKey ? String(data.apiKey).trim() : undefined
+          apiKey: data.apiKey ? String(data.apiKey).trim() : DEFAULT_API_KEY
         };
         inMemoryConfig = config;
         try {
@@ -62,14 +67,17 @@ export async function getCloudinaryConfig(): Promise<CloudinaryConfig> {
     console.warn("Could not read Firestore Cloudinary config:", e);
   }
 
-  // 3. Fallback to Env vars
+  // 3. Fallback to user verified config
   const fallbackConfig: CloudinaryConfig = {
-    cloudName: ENV_CLOUD_NAME,
-    uploadPreset: ENV_UPLOAD_PRESET,
-    apiKey: ENV_API_KEY || undefined
+    cloudName: ENV_CLOUD_NAME || DEFAULT_CLOUD_NAME,
+    uploadPreset: ENV_UPLOAD_PRESET || DEFAULT_UPLOAD_PRESET,
+    apiKey: ENV_API_KEY || DEFAULT_API_KEY
   };
 
   inMemoryConfig = fallbackConfig;
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(fallbackConfig));
+  } catch {}
   return fallbackConfig;
 }
 

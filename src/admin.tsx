@@ -645,7 +645,8 @@ function AdminApp() {
         }
       }
 
-      // 2. Server Fallback via Express /api/upload
+      // 2. Server Fallback via Express /api/upload (Cloudinary Signed Server SDK)
+      setStatusMessage(`Uploading ${type} securely via Cloudinary backend...`);
       const base64 = await toBase64(file);
       setUploadProgress(prev => ({ ...prev, [key]: 45 }));
       
@@ -661,7 +662,8 @@ function AdminApp() {
       });
 
       if (!response.ok) {
-        throw new Error(`Server upload failed with status ${response.status}`);
+        const errData = await response.json().catch(() => null);
+        throw new Error(errData?.message || `Server upload returned status ${response.status}`);
       }
 
       setUploadProgress(prev => ({ ...prev, [key]: 100 }));
@@ -669,23 +671,29 @@ function AdminApp() {
       
       if (data.secure_url) {
         if (type === "audio") {
-          try {
-            const tempAudio = new Audio(data.secure_url);
-            tempAudio.addEventListener("loadedmetadata", () => {
-              if (tempAudio.duration && !isNaN(tempAudio.duration)) {
-                setDuration(Math.round(tempAudio.duration));
-              }
-            });
-          } catch {}
+          if (data.duration && typeof data.duration === "number") {
+            setDuration(Math.round(data.duration));
+          } else {
+            try {
+              const tempAudio = new Audio(data.secure_url);
+              tempAudio.addEventListener("loadedmetadata", () => {
+                if (tempAudio.duration && !isNaN(tempAudio.duration)) {
+                  setDuration(Math.round(tempAudio.duration));
+                }
+              });
+            } catch {}
+          }
         }
+        showAdminToast(`${type === "audio" ? "Song audio" : "Cover art"} uploaded to Cloudinary CDN! ☁️`, "success");
         return data.secure_url;
       } else {
-        throw new Error("No secure URL returned");
+        throw new Error("No secure URL returned from upload server");
       }
     } catch (error: any) {
       console.error(`${type} upload error:`, error);
-      setStatusMessage(`Error uploading ${type}: ${error instanceof Error ? error.message : "Upload failed"}`);
-      showAdminToast(`Upload error: Please configure Cloudinary in the "Cloudinary Storage" tab for reliable song uploads!`, "error");
+      const errorDetail = error instanceof Error ? error.message : "Upload failed";
+      setStatusMessage(`Upload error: ${errorDetail}`);
+      showAdminToast(`Upload error: ${errorDetail}`, "error");
       setUploadProgress(prev => ({ ...prev, [key]: 0 }));
       return null;
     }
