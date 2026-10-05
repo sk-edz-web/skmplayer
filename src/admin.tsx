@@ -74,12 +74,17 @@ import {
   Users,
   UserCheck,
   AlignLeft,
-  Cloud
+  Cloud,
+  History,
+  Folder
 } from "lucide-react";
 import { Song, ReportItem, ReportStatus, AppNotification, SubscriptionKey, ArtistProfile } from "./types";
 import AdminReportsManager from "./components/AdminReportsManager";
 import AdminArtistsManager from "./components/AdminArtistsManager";
 import AdminCloudinaryManager from "./components/AdminCloudinaryManager";
+import AdminBulkUpload from "./components/AdminBulkUpload";
+import AdminLastUpdated from "./components/AdminLastUpdated";
+import AdminFolderUploadModal from "./components/AdminFolderUploadModal";
 import { uploadToCloudinaryDirect } from "./lib/cloudinary";
 import { parseLyrics, hasLyrics, fetchLyricsFromUrl } from "./utils/lyricsParser";
 import { extractAudioFileMetadata, ExtractedAudioMetadata } from "./utils/audioMetadataParser";
@@ -97,7 +102,8 @@ function AdminApp() {
   const [isLoggingIn, setIsLoggingIn] = useState<boolean>(false);
 
   // Tab State
-  const [activeTab, setActiveTab] = useState<"songs" | "artists" | "keys" | "cloudinary" | "reports">("songs");
+  const [activeTab, setActiveTab] = useState<"songs" | "batch" | "artists" | "keys" | "cloudinary" | "reports" | "updates">("songs");
+  const [showFolderUploadModal, setShowFolderUploadModal] = useState<boolean>(false);
 
   // Artist Profiles State
   const [artistsList, setArtistsList] = useState<ArtistProfile[]>([]);
@@ -1548,6 +1554,33 @@ function AdminApp() {
           </button>
 
           <button
+            onClick={() => setActiveTab("batch")}
+            className={`flex items-center space-x-2 px-5 py-2.5 rounded-xl font-bold text-xs transition-all duration-300 ${
+              activeTab === "batch"
+                ? "bg-gradient-to-r from-emerald-500 via-teal-500 to-cyan-600 text-white shadow-lg shadow-emerald-500/25"
+                : "text-slate-400 hover:text-slate-200 hover:bg-white/5"
+            }`}
+          >
+            <Layers className="w-4 h-4" />
+            <span>Multiple Upload</span>
+            <span className="text-[9px] font-mono font-bold px-1.5 py-0.5 rounded-md bg-emerald-500/20 text-emerald-300 border border-emerald-400/30 uppercase ml-1">
+              Batch
+            </span>
+          </button>
+
+          {/* Dedicated Folder Upload (1-by-1 Sequential Fullscreen) Button */}
+          <button
+            onClick={() => setShowFolderUploadModal(true)}
+            className="flex items-center space-x-2 px-5 py-2.5 rounded-xl font-bold text-xs transition-all duration-300 bg-gradient-to-r from-purple-600 via-indigo-600 to-blue-600 hover:from-purple-500 hover:to-indigo-500 text-white shadow-lg shadow-purple-500/25 border border-purple-400/30"
+          >
+            <Folder className="w-4 h-4 text-purple-200" />
+            <span>Folder Upload</span>
+            <span className="text-[9px] font-mono font-bold px-1.5 py-0.5 rounded-md bg-white/20 text-white uppercase ml-1 animate-pulse">
+              1-by-1
+            </span>
+          </button>
+
+          <button
             onClick={() => setActiveTab("artists")}
             className={`flex items-center space-x-2 px-6 py-2.5 rounded-xl font-bold text-xs transition-all duration-300 ${
               activeTab === "artists"
@@ -1614,6 +1647,21 @@ function AdminApp() {
                 <span>{reports.filter(r => r.status === "open").length} New</span>
               </span>
             )}
+          </button>
+
+          <button
+            onClick={() => setActiveTab("updates")}
+            className={`flex items-center space-x-2 px-6 py-2.5 rounded-xl font-bold text-xs transition-all duration-300 ${
+              activeTab === "updates"
+                ? "bg-gradient-to-r from-violet-500 via-purple-600 to-indigo-600 text-white shadow-lg shadow-purple-500/25"
+                : "text-slate-400 hover:text-slate-200 hover:bg-white/5"
+            }`}
+          >
+            <History className="w-4 h-4" />
+            <span>Last Updated</span>
+            <span className="text-[9px] font-mono font-bold px-1.5 py-0.5 rounded-md bg-purple-500/20 text-purple-300 border border-purple-400/30 uppercase ml-1">
+              Logs
+            </span>
           </button>
         </div>
 
@@ -3044,6 +3092,27 @@ function AdminApp() {
           />
         )}
 
+        {/* Tab 5: Bulk / Multiple Songs Upload */}
+        {activeTab === "batch" && (
+          <AdminBulkUpload
+            artistsList={artistsList}
+            categories={categories}
+            onSongAdded={fetchSongs}
+            onShowToast={showAdminToast}
+          />
+        )}
+
+        {/* Tab 6: Last Updated & System Changelog */}
+        {activeTab === "updates" && (
+          <AdminLastUpdated
+            songs={songs}
+            artistsList={artistsList}
+            keysList={keysList}
+            reports={reports}
+            onShowToast={showAdminToast}
+          />
+        )}
+
         {/* Floating Admin Toast Feedback */}
         {adminToast && (
           <div className="fixed bottom-6 right-6 z-50 animate-in fade-in slide-in-from-bottom-5 duration-200">
@@ -3144,6 +3213,15 @@ function AdminApp() {
           <p className="mt-1 text-[10px] text-slate-600">Created with Glassmorphism Liquid Theme</p>
         </footer>
 
+        {/* Edge-to-Edge Full Screen Music Folder Sequential Upload Modal */}
+        <AdminFolderUploadModal
+          isOpen={showFolderUploadModal}
+          onClose={() => setShowFolderUploadModal(false)}
+          artistsList={artistsList}
+          categories={categories}
+          onSongAdded={fetchSongs}
+          onShowToast={showAdminToast}
+        />
       </div>
     </div>
   );
