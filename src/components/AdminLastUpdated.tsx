@@ -97,6 +97,22 @@ export default function AdminLastUpdated({
 
   const changelog: ChangelogEntry[] = [
     {
+      version: "v3.5.0",
+      title: "Find Duplicate Songs Hub & Streamlined Bulk Audio Upload Engine",
+      tag: "Feature",
+      date: "Today (Just now)",
+      summary: "Removed the 1-by-1 folder upload mechanism while keeping all other audio uploads fully intact, and launched the Find Duplicate Songs management dashboard with intelligent song title matching, real-time search, audio previews, and 1-click duplicate cleanup.",
+      details: [
+        "Find Duplicate Songs Hub: Dedicated tab in Admin navigation and instant button in Track Library that identifies songs with identical titles",
+        "Smart Duplicate Matching: Normalizes song titles (strips casing, leading track numbers, audio extensions, and quotes) to accurately find duplicate entries",
+        "Interactive Duplicate Management: Real-time search filter by title or artist, embedded audio preview for each copy, metadata comparison, and 1-click 'Keep This & Delete Others' cleanup",
+        "Streamlined Bulk Audio Upload: Removed folder 1-by-1 upload option while keeping multi-select audio files, drag-and-drop, track staging, and zero-error live progress uploads intact",
+        "Isolated & Protected: Single song upload and multiple audio track uploads remain untouched and fully operational"
+      ],
+      files: ["src/admin.tsx", "src/components/AdminBulkUpload.tsx", "src/components/AdminLastUpdated.tsx"],
+      status: "Live & Active"
+    },
+    {
       version: "v3.4.5",
       title: "Music Folder Sequential Uploader, Live Remaining Monitor & Resilient 4-Tier Pipeline",
       tag: "Feature",

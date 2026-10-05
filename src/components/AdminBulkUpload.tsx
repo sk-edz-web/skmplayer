@@ -35,7 +35,6 @@ import { uploadToCloudinaryDirect } from "../lib/cloudinary";
 import { scanDroppedItems, processFilesList } from "../utils/folderScanner";
 import { collection, addDoc, updateDoc, doc, query, orderBy, onSnapshot } from "firebase/firestore";
 import { db, auth } from "../firebase";
-import AdminFolderUploadModal from "./AdminFolderUploadModal";
 
 export interface StagedSong {
   id: string;
@@ -77,7 +76,6 @@ export default function AdminBulkUpload({
   const [globalProgress, setGlobalProgress] = useState<number>(0);
   const [editingCardId, setEditingCardId] = useState<string | null>(null);
   const [playingPreviewUrl, setPlayingPreviewUrl] = useState<string | null>(null);
-  const [showFolderModal, setShowFolderModal] = useState<boolean>(false);
   
   // Real-time Upload Progress & Queue Tracking
   const [uploadingIndex, setUploadingIndex] = useState<number>(-1);
@@ -92,7 +90,6 @@ export default function AdminBulkUpload({
 
   const audioPreviewRef = useRef<HTMLAudioElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const folderInputRef = useRef<HTMLInputElement | null>(null);
 
   // Private Playlist Routing for Batch Upload
   const [existingPlaylists, setExistingPlaylists] = useState<Playlist[]>([]);
@@ -105,15 +102,6 @@ export default function AdminBulkUpload({
   useEffect(() => {
     pauseRef.current = isPaused;
   }, [isPaused]);
-
-  // Set webkitdirectory and directory attributes on folder input element
-  useEffect(() => {
-    if (folderInputRef.current) {
-      folderInputRef.current.setAttribute("webkitdirectory", "");
-      folderInputRef.current.setAttribute("directory", "");
-      folderInputRef.current.setAttribute("multiple", "");
-    }
-  }, []);
 
   // Subscribe to existing playlists in Firestore
   useEffect(() => {
@@ -228,17 +216,7 @@ export default function AdminBulkUpload({
     }
   };
 
-  // Handle folder selected from native folder picker
-  const handleFolderSelected = (filesList: FileList | null) => {
-    if (!filesList || filesList.length === 0) return;
-    const scanned = processFilesList(filesList);
-    addFilesToQueue(scanned.audioFiles, scanned.coverFiles, scanned.folderName);
-    if (folderInputRef.current) {
-      folderInputRef.current.value = "";
-    }
-  };
-
-  // Handle drag and drop of files OR whole folders
+  // Handle drag and drop of audio files
   const handleDropFilesOrFolder = async (e: React.DragEvent) => {
     e.preventDefault();
     setIsDragging(false);
@@ -540,7 +518,7 @@ export default function AdminBulkUpload({
         onError={() => setPlayingPreviewUrl(null)} 
       />
 
-      {/* Hidden file & folder inputs */}
+      {/* Hidden audio files input */}
       <input 
         ref={fileInputRef}
         type="file" 
@@ -548,13 +526,6 @@ export default function AdminBulkUpload({
         accept="audio/*,.mp3,.m4a,.wav,.aac,.flac,.ogg,.opus" 
         onChange={(e) => handleFilesSelected(e.target.files)}
         className="hidden" 
-      />
-      <input 
-        ref={folderInputRef}
-        type="file"
-        // webkitdirectory and directory set in useEffect via ref
-        className="hidden" 
-        onChange={(e) => handleFolderSelected(e.target.files)}
       />
 
       {/* Top Banner & Multi-file Upload Zone */}
@@ -569,14 +540,14 @@ export default function AdminBulkUpload({
                 <Layers className="w-5 h-5" />
               </span>
               <h2 className="text-xl md:text-2xl font-black text-slate-100 tracking-tight">
-                Bulk / Music Folder Upload Engine
+                Bulk Audio Files Upload Engine
               </h2>
               <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 font-bold uppercase">
-                1-by-1 Queue
+                Batch Mode
               </span>
             </div>
             <p className="text-xs md:text-sm text-slate-400 max-w-2xl">
-              Upload multiple audio files or an <strong>entire music folder</strong> with one click. Songs are uploaded strictly sequentially (1-by-1) showing exact progress, which song is uploading, and remaining count with zero errors!
+              Upload multiple audio files with one click. Shows live progress, active song name, and remaining queue with resilient zero-error processing.
             </p>
           </div>
 
@@ -605,97 +576,38 @@ export default function AdminBulkUpload({
           )}
         </div>
 
-        {/* 3 Upload Options: Files, Folder Directory, Edge-to-Edge Full Screen */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-          {/* Option 1: Select Audio Files */}
+        {/* Upload Audio Files Primary Trigger */}
+        <div className="mb-6">
           <div 
             onClick={() => fileInputRef.current?.click()}
-            className="p-5 rounded-2xl bg-black/30 border border-white/10 hover:border-cyan-400/50 hover:bg-cyan-500/5 transition-all cursor-pointer group flex flex-col justify-between"
+            className="p-6 rounded-2xl bg-gradient-to-r from-cyan-950/30 via-slate-900/60 to-indigo-950/30 border border-cyan-500/30 hover:border-cyan-400 hover:bg-cyan-500/10 transition-all cursor-pointer group flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-lg"
           >
-            <div>
-              <div className="flex items-center justify-between mb-3">
-                <div className="w-10 h-10 rounded-xl bg-cyan-500/10 text-cyan-400 flex items-center justify-center border border-cyan-500/20 group-hover:scale-105 transition-transform">
-                  <UploadCloud className="w-5 h-5" />
-                </div>
-                <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-white/5 text-slate-300 border border-white/10">
-                  Audio Files
-                </span>
+            <div className="flex items-center space-x-4">
+              <div className="w-12 h-12 rounded-xl bg-cyan-500/15 text-cyan-400 flex items-center justify-center border border-cyan-500/30 group-hover:scale-105 group-hover:bg-cyan-500/25 transition-transform flex-shrink-0">
+                <UploadCloud className="w-6 h-6" />
               </div>
-              <h3 className="text-sm font-bold text-white group-hover:text-cyan-300 transition-colors">
-                Select Audio Files (.mp3, .m4a, .wav)
-              </h3>
-              <p className="text-xs text-slate-400 mt-1">
-                Pick individual audio tracks. Review individual cards below, edit titles/artists, and upload when ready.
-              </p>
-            </div>
-            <div className="mt-4 pt-3 border-t border-white/5 flex items-center text-xs font-bold text-cyan-400">
-              <span>Choose audio files &rarr;</span>
-            </div>
-          </div>
-
-          {/* Option 2: Select Full Music Folder */}
-          <div 
-            onClick={() => folderInputRef.current?.click()}
-            className="p-5 rounded-2xl bg-gradient-to-br from-emerald-950/30 via-teal-950/20 to-[#0a121d] border border-emerald-500/30 hover:border-emerald-400/60 hover:bg-emerald-500/10 transition-all cursor-pointer group flex flex-col justify-between relative overflow-hidden"
-          >
-            <div className="absolute top-0 right-0 w-24 h-24 bg-emerald-500/10 rounded-full blur-xl pointer-events-none"></div>
-            <div>
-              <div className="flex items-center justify-between mb-3">
-                <div className="w-10 h-10 rounded-xl bg-emerald-500/15 text-emerald-400 flex items-center justify-center border border-emerald-500/30 group-hover:scale-105 transition-transform">
-                  <FolderCheck className="w-5 h-5" />
+              <div>
+                <div className="flex items-center space-x-2">
+                  <h3 className="text-sm md:text-base font-bold text-white group-hover:text-cyan-300 transition-colors">
+                    Select Audio Files (.mp3, .m4a, .wav, .flac)
+                  </h3>
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 font-bold uppercase">
+                    Multi-Select
+                  </span>
                 </div>
-                <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-bold uppercase">
-                  Select Folder
-                </span>
+                <p className="text-xs text-slate-400 mt-1 max-w-xl">
+                  Pick individual audio tracks. Review individual cards below, edit titles/artists, preview playback, and upload with one click.
+                </p>
               </div>
-              <h3 className="text-sm font-bold text-white group-hover:text-emerald-300 transition-colors flex items-center space-x-1.5">
-                <span>📁 Select Music Folder</span>
-              </h3>
-              <p className="text-xs text-slate-400 mt-1">
-                Pick an entire music album folder. Automatically loads all tracks, folder art & tags directly into the staging queue!
-              </p>
             </div>
-            <div className="mt-4 pt-3 border-t border-white/5 flex items-center justify-between text-xs font-bold text-emerald-400">
-              <span>Choose Music Directory &rarr;</span>
-              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300">
-                Auto-scan
-              </span>
-            </div>
-          </div>
-
-          {/* Option 3: Edge-to-Edge Folder Modal */}
-          <div 
-            onClick={() => setShowFolderModal(true)}
-            className="p-5 rounded-2xl bg-gradient-to-br from-indigo-950/40 via-purple-950/30 to-[#0d1424] border border-purple-500/30 hover:border-purple-400 hover:shadow-xl hover:shadow-purple-500/10 transition-all cursor-pointer group flex flex-col justify-between relative overflow-hidden"
-          >
-            <div className="absolute top-0 right-0 w-32 h-32 bg-purple-500/10 rounded-full blur-2xl pointer-events-none"></div>
-            <div>
-              <div className="flex items-center justify-between mb-3">
-                <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-purple-500 to-indigo-600 text-white flex items-center justify-center shadow-lg shadow-purple-500/20 group-hover:scale-105 transition-transform">
-                  <Folder className="w-5 h-5" />
-                </div>
-                <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-400/30 uppercase font-bold animate-pulse">
-                  Full Screen
-                </span>
-              </div>
-              <h3 className="text-sm font-bold text-white group-hover:text-purple-300 transition-colors flex items-center space-x-1.5">
-                <span>Edge-to-Edge Inspector Mode</span>
-                <Maximize2 className="w-3.5 h-3.5 text-purple-400" />
-              </h3>
-              <p className="text-xs text-slate-400 mt-1">
-                Full-screen album dashboard with real-time missing details audit (artwork, lyrics, artist) & card editor.
-              </p>
-            </div>
-            <div className="mt-4 pt-3 border-t border-white/5 flex items-center justify-between text-xs font-bold text-purple-300">
-              <span>Launch Full Screen Mode</span>
-              <span className="px-2 py-0.5 rounded bg-purple-500/20 text-[10px] font-mono border border-purple-500/30">
-                Edge-to-Edge
-              </span>
+            <div className="self-end sm:self-auto px-4 py-2 rounded-xl bg-cyan-500/20 hover:bg-cyan-500 text-cyan-300 hover:text-black border border-cyan-400/40 text-xs font-bold transition-all flex items-center space-x-1.5 flex-shrink-0">
+              <span>Choose audio files</span>
+              <span>&rarr;</span>
             </div>
           </div>
         </div>
 
-        {/* Drag & Drop Multi-file AND Folder Drop Box */}
+        {/* Drag & Drop Multi-file Drop Box */}
         <div 
           onClick={() => fileInputRef.current?.click()}
           onDragOver={(e) => {
@@ -710,15 +622,15 @@ export default function AdminBulkUpload({
               : "border-cyan-500/30 hover:border-cyan-400 bg-black/20 hover:bg-cyan-500/5"
           }`}
         >
-          <div className="w-16 h-16 rounded-2xl bg-cyan-500/10 text-cyan-400 flex items-center justify-center mx-auto mb-4 border border-cyan-500/20 group-hover:scale-110 group-hover:bg-cyan-500/20 transition-all duration-300 shadow-lg shadow-cyan-500/10">
-            <UploadCloud className="w-8 h-8" />
+          <div className="w-14 h-14 rounded-2xl bg-cyan-500/10 text-cyan-400 flex items-center justify-center mx-auto mb-3 border border-cyan-500/20 group-hover:scale-110 group-hover:bg-cyan-500/20 transition-all duration-300 shadow-lg shadow-cyan-500/10">
+            <UploadCloud className="w-7 h-7" />
           </div>
 
           <h3 className="text-base font-bold text-slate-200 group-hover:text-cyan-300 transition-colors">
-            {isDragging ? "Drop Files or Music Folder Here!" : "Drag & Drop Audio Files OR Entire Folder Here"}
+            {isDragging ? "Drop Audio Files Here!" : "Drag & Drop Audio Files Here"}
           </h3>
           <p className="text-xs text-slate-400 mt-1 max-w-md mx-auto">
-            Drop entire folders or select files. Recursively extracts MP3, M4A, WAV, AAC with automatic ID3 tag extraction and folder cover art.
+            Drop multiple audio tracks (.mp3, .m4a, .wav, .flac, .ogg, .opus) to stage them. Auto-detects ID3 tags, artist names, and cover artwork.
           </p>
 
           <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
@@ -731,8 +643,8 @@ export default function AdminBulkUpload({
               <span>Extracts Embedded Artwork</span>
             </span>
             <span className="inline-flex items-center space-x-1 px-2.5 py-1 rounded-lg bg-white/5 text-[11px] text-slate-300 border border-white/10 font-mono">
-              <FolderCheck className="w-3 h-3 text-emerald-400" />
-              <span>Supports Directory Traversal</span>
+              <FileAudio className="w-3 h-3 text-emerald-400" />
+              <span>All Audio Formats</span>
             </span>
           </div>
         </div>
@@ -807,16 +719,6 @@ export default function AdminBulkUpload({
 
               <button
                 type="button"
-                onClick={() => folderInputRef.current?.click()}
-                disabled={isBulkUploading}
-                className="px-3.5 py-2.5 rounded-xl bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/25 text-xs font-bold transition-all flex items-center space-x-2 disabled:opacity-50"
-              >
-                <FolderPlus className="w-4 h-4 text-emerald-400" />
-                <span>Add Folder</span>
-              </button>
-
-              <button
-                type="button"
                 onClick={handleClearAll}
                 disabled={isBulkUploading}
                 className="px-3.5 py-2.5 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-300 border border-red-500/20 text-xs font-bold transition-all flex items-center space-x-2 disabled:opacity-50"
@@ -841,7 +743,7 @@ export default function AdminBulkUpload({
                 ) : (
                   <>
                     <UploadCloud className="w-4 h-4" />
-                    <span>Upload All ({pendingTracksList.length}) Songs Sequentially</span>
+                    <span>Upload All ({pendingTracksList.length}) Songs</span>
                   </>
                 )}
               </button>
@@ -1208,16 +1110,6 @@ export default function AdminBulkUpload({
           </div>
         </div>
       )}
-
-      {/* Edge-to-Edge Full Screen Music Folder Upload Modal */}
-      <AdminFolderUploadModal
-        isOpen={showFolderModal}
-        onClose={() => setShowFolderModal(false)}
-        artistsList={artistsList}
-        categories={categories}
-        onSongAdded={onSongAdded}
-        onShowToast={onShowToast}
-      />
     </div>
   );
 }

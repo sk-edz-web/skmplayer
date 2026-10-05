@@ -1,4 +1,4 @@
-import React, { StrictMode, useState, useEffect, useRef } from "react";
+import React, { StrictMode, useState, useEffect, useRef, useMemo } from "react";
 import { createRoot } from "react-dom/client";
 import { 
   db, 
@@ -85,7 +85,6 @@ import AdminArtistsManager from "./components/AdminArtistsManager";
 import AdminCloudinaryManager from "./components/AdminCloudinaryManager";
 import AdminBulkUpload from "./components/AdminBulkUpload";
 import AdminLastUpdated from "./components/AdminLastUpdated";
-import AdminFolderUploadModal from "./components/AdminFolderUploadModal";
 import AdminPlaylistsManager from "./components/AdminPlaylistsManager";
 import { uploadToCloudinaryDirect } from "./lib/cloudinary";
 import { parseLyrics, hasLyrics, fetchLyricsFromUrl } from "./utils/lyricsParser";
@@ -104,8 +103,10 @@ function AdminApp() {
   const [isLoggingIn, setIsLoggingIn] = useState<boolean>(false);
 
   // Tab State
-  const [activeTab, setActiveTab] = useState<"songs" | "batch" | "playlists" | "artists" | "keys" | "cloudinary" | "reports" | "updates">("songs");
-  const [showFolderUploadModal, setShowFolderUploadModal] = useState<boolean>(false);
+  const [activeTab, setActiveTab] = useState<"songs" | "batch" | "duplicates" | "playlists" | "artists" | "keys" | "cloudinary" | "reports" | "updates">("songs");
+  // Find Duplicate Songs State
+  const [showDuplicatesOnly, setShowDuplicatesOnly] = useState<boolean>(false);
+  const [duplicateSearchTerm, setDuplicateSearchTerm] = useState<string>("");
 
   // Admin Playlists State
   const [adminPlaylists, setAdminPlaylists] = useState<Playlist[]>([]);
@@ -981,6 +982,74 @@ function AdminApp() {
     }
   };
 
+  // Compute duplicate songs grouped by identical or normalized title
+  const duplicateGroups = useMemo(() => {
+    const map = new Map<string, Song[]>();
+    for (const song of songs) {
+      if (!song.title) continue;
+      const normalized = (song.title || "")
+        .toLowerCase()
+        .trim()
+        .replace(/\.(mp3|m4a|wav|aac|flac|ogg|opus)$/i, "")
+        .replace(/^\d+[\s.-]+/, "")
+        .replace(/['`’]/g, "'")
+        .replace(/["“”]/g, '"')
+        .replace(/\s+/g, " ")
+        .trim();
+      if (!normalized) continue;
+      const list = map.get(normalized) || [];
+      list.push(song);
+      map.set(normalized, list);
+    }
+
+    const duplicates: { name: string; songs: Song[] }[] = [];
+    map.forEach((groupedSongs) => {
+      if (groupedSongs.length > 1) {
+        duplicates.push({
+          name: groupedSongs[0].title.trim(),
+          songs: groupedSongs
+        });
+      }
+    });
+
+    return duplicates.sort((a, b) => b.songs.length - a.songs.length);
+  }, [songs]);
+
+  const totalDuplicateTracksCount = useMemo(() => {
+    return duplicateGroups.reduce((acc, g) => acc + g.songs.length, 0);
+  }, [duplicateGroups]);
+
+  // Filter duplicate groups based on search term
+  const filteredDuplicateGroups = useMemo(() => {
+    const term = (trackSearchTerm || duplicateSearchTerm).trim().toLowerCase();
+    if (!term) return duplicateGroups;
+    return duplicateGroups.filter(group => 
+      group.name.toLowerCase().includes(term) ||
+      group.songs.some(s => 
+        s.title.toLowerCase().includes(term) || 
+        s.artist.toLowerCase().includes(term) ||
+        (s.album && s.album.toLowerCase().includes(term))
+      )
+    );
+  }, [duplicateGroups, trackSearchTerm, duplicateSearchTerm]);
+
+  // Batch Cleanup Duplicates: Keep one chosen song and delete other copies
+  const handleKeepOneDeleteDuplicates = async (keepSong: Song, duplicateGroup: Song[]) => {
+    const toDelete = duplicateGroup.filter(s => s.id !== keepSong.id);
+    if (!confirm(`Keep "${keepSong.title}" (${keepSong.artist}) and delete the other ${toDelete.length} duplicate copy(ies)? This action cannot be undone.`)) {
+      return;
+    }
+    try {
+      for (const item of toDelete) {
+        await deleteDoc(doc(db, "songs", item.id));
+      }
+      setSongs(prev => prev.filter(s => !toDelete.some(del => del.id === s.id)));
+      showAdminToast(`Cleaned up duplicates! Kept "${keepSong.title}". Deleted ${toDelete.length} duplicate copy(ies). 🗑️`, "success");
+    } catch (err: any) {
+      showAdminToast(`Failed cleaning duplicates: ${err.message}`, "error");
+    }
+  };
+
   // Helper to format duration
   const formatTime = (secs: number) => {
     const mins = Math.floor(secs / 60);
@@ -1644,16 +1713,25 @@ function AdminApp() {
             </span>
           </button>
 
-          {/* Dedicated Folder Upload (1-by-1 Sequential Fullscreen) Button */}
+          {/* Dedicated Find Duplicate Songs Tab Button */}
           <button
-            onClick={() => setShowFolderUploadModal(true)}
-            className="flex items-center space-x-2 px-5 py-2.5 rounded-xl font-bold text-xs transition-all duration-300 bg-gradient-to-r from-purple-600 via-indigo-600 to-blue-600 hover:from-purple-500 hover:to-indigo-500 text-white shadow-lg shadow-purple-500/25 border border-purple-400/30"
+            onClick={() => {
+              setActiveTab("duplicates");
+              setShowDuplicatesOnly(true);
+            }}
+            className={`flex items-center space-x-2 px-5 py-2.5 rounded-xl font-bold text-xs transition-all duration-300 ${
+              activeTab === "duplicates"
+                ? "bg-gradient-to-r from-amber-500 via-orange-500 to-amber-600 text-white shadow-lg shadow-amber-500/25"
+                : "text-slate-400 hover:text-slate-200 hover:bg-white/5"
+            }`}
           >
-            <Folder className="w-4 h-4 text-purple-200" />
-            <span>Folder Upload</span>
-            <span className="text-[9px] font-mono font-bold px-1.5 py-0.5 rounded-md bg-white/20 text-white uppercase ml-1 animate-pulse">
-              1-by-1
-            </span>
+            <Copy className="w-4 h-4 text-amber-400" />
+            <span>Find Duplicate Songs</span>
+            {duplicateGroups.length > 0 && (
+              <span className="text-[9px] font-mono font-black px-1.5 py-0.5 rounded-md bg-amber-500 text-black ml-1">
+                {duplicateGroups.length}
+              </span>
+            )}
           </button>
 
           {/* Private Playlists Hub Tab Button */}
@@ -2720,14 +2798,38 @@ function AdminApp() {
                     </h2>
                     <p className="text-xs text-slate-400">All songs available for streaming on skplayer</p>
                   </div>
-                  <button 
-                    onClick={fetchSongs} 
-                    className="self-start sm:self-auto p-2.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 transition-all flex items-center space-x-1.5 text-xs font-medium"
-                    title="Reload Tracks"
-                  >
-                    <Loader2 className={`w-4 h-4 ${loadingSongs ? "animate-spin" : ""}`} />
-                    <span className="hidden sm:inline">Refresh</span>
-                  </button>
+                  <div className="flex items-center space-x-2 self-start sm:self-auto flex-wrap gap-2">
+                    {/* Find Duplicate Songs Button */}
+                    <button
+                      type="button"
+                      onClick={() => setShowDuplicatesOnly(prev => !prev)}
+                      className={`p-2.5 rounded-xl border text-xs font-bold transition-all flex items-center space-x-2 ${
+                        showDuplicatesOnly
+                          ? "bg-amber-500/25 border-amber-400 text-amber-300 shadow-lg shadow-amber-500/20"
+                          : duplicateGroups.length > 0
+                          ? "bg-amber-500/10 hover:bg-amber-500/20 border-amber-500/30 text-amber-300"
+                          : "bg-white/5 hover:bg-white/10 border-white/10 text-slate-400 hover:text-slate-200"
+                      }`}
+                      title="Find songs with identical or duplicate names"
+                    >
+                      <Copy className="w-4 h-4 text-amber-400" />
+                      <span>{showDuplicatesOnly ? "Showing Duplicates" : "Find Duplicate Songs"}</span>
+                      {duplicateGroups.length > 0 && (
+                        <span className="px-1.5 py-0.5 rounded-md bg-amber-500 text-black text-[10px] font-black font-mono">
+                          {duplicateGroups.length}
+                        </span>
+                      )}
+                    </button>
+
+                    <button 
+                      onClick={fetchSongs} 
+                      className="self-start sm:self-auto p-2.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 transition-all flex items-center space-x-1.5 text-xs font-medium"
+                      title="Reload Tracks"
+                    >
+                      <Loader2 className={`w-4 h-4 ${loadingSongs ? "animate-spin" : ""}`} />
+                      <span className="hidden sm:inline">Refresh</span>
+                    </button>
+                  </div>
                 </div>
 
                 {/* Real-time Track Search & Category Filter Bar */}
@@ -2756,24 +2858,47 @@ function AdminApp() {
                   <div className="flex items-center space-x-1.5 overflow-x-auto pb-1 custom-scrollbar">
                     <button
                       type="button"
-                      onClick={() => setTrackFilterCategory("all")}
+                      onClick={() => {
+                        setShowDuplicatesOnly(false);
+                        setTrackFilterCategory("all");
+                      }}
                       className={`px-3 py-1 rounded-xl text-[11px] font-bold transition-all border whitespace-nowrap ${
-                        trackFilterCategory === "all"
+                        !showDuplicatesOnly && trackFilterCategory === "all"
                           ? "bg-cyan-500/20 border-cyan-400/50 text-cyan-300 shadow-[0_0_10px_rgba(6,182,212,0.2)]"
                           : "bg-white/5 border-white/10 text-slate-400 hover:text-white"
                       }`}
                     >
                       All Tracks ({songs.length})
                     </button>
+
+                    {/* Duplicate Songs Pill */}
+                    <button
+                      type="button"
+                      onClick={() => setShowDuplicatesOnly(prev => !prev)}
+                      className={`px-3 py-1 rounded-xl text-[11px] font-bold transition-all border whitespace-nowrap flex items-center space-x-1.5 ${
+                        showDuplicatesOnly
+                          ? "bg-amber-500/25 border-amber-400 text-amber-300 shadow-[0_0_10px_rgba(245,158,11,0.3)] font-black"
+                          : duplicateGroups.length > 0
+                          ? "bg-amber-500/10 border-amber-500/30 text-amber-300 hover:bg-amber-500/20"
+                          : "bg-white/5 border-white/10 text-slate-400 hover:text-white"
+                      }`}
+                    >
+                      <Copy className="w-3 h-3 text-amber-400" />
+                      <span>Duplicate Names ({duplicateGroups.length})</span>
+                    </button>
+
                     {categories.map((cat) => {
                       const count = songs.filter((s) => s.categories && s.categories.includes(cat)).length;
                       return (
                         <button
                           key={cat}
                           type="button"
-                          onClick={() => setTrackFilterCategory(cat)}
+                          onClick={() => {
+                            setShowDuplicatesOnly(false);
+                            setTrackFilterCategory(cat);
+                          }}
                           className={`px-3 py-1 rounded-xl text-[11px] font-bold transition-all border whitespace-nowrap ${
-                            trackFilterCategory === cat
+                            !showDuplicatesOnly && trackFilterCategory === cat
                               ? "bg-indigo-500/20 border-indigo-400/50 text-indigo-300 shadow-[0_0_10px_rgba(99,102,241,0.2)]"
                               : "bg-white/5 border-white/10 text-slate-400 hover:text-white"
                           }`}
@@ -2789,6 +2914,156 @@ function AdminApp() {
                   <div className="flex flex-col items-center justify-center py-20">
                     <Loader2 className="w-10 h-10 text-cyan-400 animate-spin mb-4" />
                     <p className="text-sm font-mono text-slate-400">Syncing with Cloud Firestore...</p>
+                  </div>
+                ) : showDuplicatesOnly ? (
+                  /* DEDICATED DUPLICATE SONGS INSPECTOR VIEW */
+                  <div className="space-y-4 max-h-[680px] overflow-y-auto pr-2 custom-scrollbar">
+                    {/* Header Banner */}
+                    <div className="p-4 rounded-2xl bg-gradient-to-r from-amber-950/40 via-slate-900 to-amber-950/20 border border-amber-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-lg">
+                      <div className="flex items-center space-x-3">
+                        <div className="w-10 h-10 rounded-xl bg-amber-500/20 text-amber-400 flex items-center justify-center border border-amber-500/30 flex-shrink-0">
+                          <Copy className="w-5 h-5" />
+                        </div>
+                        <div>
+                          <h3 className="text-sm font-bold text-white flex items-center space-x-2">
+                            <span>Duplicate Songs Detector</span>
+                            <span className="px-2 py-0.5 rounded-full bg-amber-500 text-black text-[10px] font-black font-mono">
+                              {duplicateGroups.length} Duplicate Titles ({totalDuplicateTracksCount} Tracks)
+                            </span>
+                          </h3>
+                          <p className="text-xs text-slate-400">
+                            Listing tracks that share the exact same title. Compare artists, audio files, and delete unwanted duplicates.
+                          </p>
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => setShowDuplicatesOnly(false)}
+                        className="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-slate-200 text-xs font-bold transition-colors self-start sm:self-auto flex items-center space-x-1"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                        <span>View All Tracks</span>
+                      </button>
+                    </div>
+
+                    {filteredDuplicateGroups.length === 0 ? (
+                      <div className="text-center py-16 px-4 bg-white/2 border border-white/5 rounded-2xl">
+                        <CheckCircle2 className="w-12 h-12 text-emerald-400 mx-auto mb-3" />
+                        <h4 className="text-base font-bold text-slate-200">
+                          {trackSearchTerm ? `No duplicate songs match "${trackSearchTerm}"` : "No duplicate songs found!"}
+                        </h4>
+                        <p className="text-xs text-slate-400 max-w-sm mx-auto mt-1">
+                          {trackSearchTerm 
+                            ? "Try searching for a different song name or clear your search to see all duplicates."
+                            : "Every song in your track library has a unique title. No duplicate names detected."}
+                        </p>
+                      </div>
+                    ) : (
+                      filteredDuplicateGroups.map((group, groupIdx) => (
+                        <div 
+                          key={groupIdx}
+                          className="bg-black/40 border border-amber-500/25 hover:border-amber-500/40 rounded-2xl p-4 transition-all shadow-md space-y-3"
+                        >
+                          {/* Group Title Bar */}
+                          <div className="flex items-center justify-between pb-2.5 border-b border-white/5 flex-wrap gap-2">
+                            <div className="flex items-center space-x-2">
+                              <span className="w-6 h-6 rounded-lg bg-amber-500/20 text-amber-300 text-xs font-mono font-bold flex items-center justify-center">
+                                #{groupIdx + 1}
+                              </span>
+                              <h4 className="text-sm font-black text-amber-300 tracking-wide">
+                                "{group.name}"
+                              </h4>
+                              <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[10px] font-mono font-bold">
+                                {group.songs.length} copies found
+                              </span>
+                            </div>
+                          </div>
+
+                          {/* List of Copies for this Song Name */}
+                          <div className="space-y-2.5">
+                            {group.songs.map((song, copyIdx) => (
+                              <div 
+                                key={song.id}
+                                className="flex flex-col sm:flex-row sm:items-center justify-between p-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/5 gap-3 transition-colors"
+                              >
+                                <div className="flex items-center space-x-3 min-w-0">
+                                  {/* Cover Art & Audio Preview Button */}
+                                  <div className="relative w-12 h-12 rounded-xl overflow-hidden bg-black/50 border border-white/10 flex-shrink-0">
+                                    <img 
+                                      src={song.imageUrl} 
+                                      alt={song.title} 
+                                      className="w-full h-full object-cover" 
+                                      referrerPolicy="no-referrer"
+                                    />
+                                    <button
+                                      type="button"
+                                      onClick={() => togglePreview(song)}
+                                      className="absolute inset-0 bg-black/40 hover:bg-black/60 flex items-center justify-center transition-colors text-white"
+                                      title="Listen to preview"
+                                    >
+                                      {previewSongId === song.id && isPlayingPreview ? (
+                                        <Pause className="w-5 h-5 text-amber-400" />
+                                      ) : (
+                                        <Play className="w-5 h-5 text-white" />
+                                      )}
+                                    </button>
+                                  </div>
+
+                                  <div className="min-w-0">
+                                    <div className="flex items-center space-x-2">
+                                      <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-white/10 text-slate-300 font-bold">
+                                        Copy #{copyIdx + 1}
+                                      </span>
+                                      <h5 className="text-xs font-bold text-white truncate">
+                                        {song.title}
+                                      </h5>
+                                    </div>
+                                    <p className="text-[11px] text-slate-300 mt-0.5">
+                                      Artist: <strong>{song.artist}</strong> • Album: {song.album || "Single"}
+                                    </p>
+                                    <p className="text-[10px] text-slate-400 font-mono">
+                                      Duration: {formatTime(song.duration)} • Added: {new Date(song.createdAt).toLocaleDateString()}
+                                    </p>
+                                  </div>
+                                </div>
+
+                                {/* Action Buttons for Duplicate Copy */}
+                                <div className="flex items-center space-x-2 self-end sm:self-auto flex-shrink-0">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleKeepOneDeleteDuplicates(song, group.songs)}
+                                    className="px-3 py-1.5 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30 text-[11px] font-bold transition-colors flex items-center space-x-1"
+                                    title="Keep this copy and delete the others"
+                                  >
+                                    <Check className="w-3.5 h-3.5" />
+                                    <span>Keep This & Delete Others</span>
+                                  </button>
+
+                                  <button
+                                    type="button"
+                                    onClick={() => startEditSong(song)}
+                                    className="p-1.5 rounded-xl bg-white/5 hover:bg-white/10 text-slate-300 hover:text-white border border-white/10 transition-colors"
+                                    title="Edit details"
+                                  >
+                                    <Edit className="w-3.5 h-3.5" />
+                                  </button>
+
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDeleteSong(song.id)}
+                                    className="p-1.5 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-300 hover:text-red-200 border border-red-500/20 transition-colors"
+                                    title="Delete this copy"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ))
+                    )}
                   </div>
                 ) : songs.length === 0 ? (
                   <div className="text-center py-20 border border-dashed border-white/10 rounded-2xl bg-white/5">
@@ -2946,6 +3221,234 @@ function AdminApp() {
               </div>
             </div>
 
+          </div>
+        )}
+
+        {/* Dedicated Find Duplicate Songs Dashboard Tab */}
+        {activeTab === "duplicates" && (
+          <div className="bg-white/5 border border-amber-500/25 rounded-3xl p-6 md:p-8 backdrop-blur-xl shadow-2xl relative overflow-hidden animate-fade-in space-y-6">
+            <div className="absolute top-0 right-0 w-96 h-96 bg-amber-500/10 rounded-full blur-3xl pointer-events-none"></div>
+
+            {/* Header Banner */}
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-6 border-b border-white/10 relative z-10">
+              <div className="flex items-center space-x-3.5">
+                <div className="w-12 h-12 rounded-2xl bg-amber-500/20 text-amber-400 flex items-center justify-center border border-amber-500/30 flex-shrink-0 shadow-lg shadow-amber-500/10">
+                  <Copy className="w-6 h-6" />
+                </div>
+                <div>
+                  <div className="flex items-center space-x-2.5 flex-wrap">
+                    <h2 className="text-xl md:text-2xl font-black text-white tracking-tight">
+                      Find Duplicate Songs
+                    </h2>
+                    <span className="px-2.5 py-0.5 rounded-full bg-amber-500 text-black text-xs font-black font-mono">
+                      {duplicateGroups.length} Duplicate Titles
+                    </span>
+                  </div>
+                  <p className="text-xs md:text-sm text-slate-400 mt-0.5">
+                    Listing tracks that share the exact same title. Compare audio previews, artists & artwork, and delete unwanted duplicate copies with 1-click.
+                  </p>
+                </div>
+              </div>
+
+              {/* Stats & Actions */}
+              <div className="flex items-center space-x-3 self-start md:self-auto flex-wrap gap-2">
+                <div className="px-3.5 py-2 rounded-xl bg-black/40 border border-white/10 text-xs font-mono text-slate-300">
+                  <span className="text-amber-400 font-bold">{totalDuplicateTracksCount}</span> Redundant Tracks
+                </div>
+
+                <button
+                  type="button"
+                  onClick={fetchSongs}
+                  className="px-3.5 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-slate-200 text-xs font-bold transition-all flex items-center space-x-1.5"
+                  title="Reload from Firestore"
+                >
+                  <Loader2 className={`w-3.5 h-3.5 ${loadingSongs ? "animate-spin" : ""}`} />
+                  <span>Refresh</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setActiveTab("songs")}
+                  className="px-3.5 py-2 rounded-xl bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 border border-cyan-500/30 text-xs font-bold transition-all flex items-center space-x-1.5"
+                >
+                  <Music className="w-3.5 h-3.5" />
+                  <span>Tracks Manager</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Real-time Search within Duplicates */}
+            <div className="relative z-10">
+              <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+              <input
+                type="text"
+                placeholder="Search duplicate songs by song title or artist name..."
+                value={duplicateSearchTerm}
+                onChange={(e) => setDuplicateSearchTerm(e.target.value)}
+                className="w-full pl-10 pr-10 py-3 bg-black/40 border border-white/10 focus:border-amber-400/60 rounded-2xl text-slate-100 placeholder-slate-500 text-xs outline-none transition-all focus:ring-1 focus:ring-amber-400/30"
+              />
+              {duplicateSearchTerm && (
+                <button
+                  type="button"
+                  onClick={() => setDuplicateSearchTerm("")}
+                  className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white text-xs px-1.5 py-0.5 rounded-md hover:bg-white/10 transition-colors"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+
+            {/* Duplicate Groups List */}
+            {loadingSongs ? (
+              <div className="flex flex-col items-center justify-center py-20 relative z-10">
+                <Loader2 className="w-10 h-10 text-amber-400 animate-spin mb-4" />
+                <p className="text-sm font-mono text-slate-400">Scanning library for duplicate song titles...</p>
+              </div>
+            ) : filteredDuplicateGroups.length === 0 ? (
+              <div className="text-center py-20 px-4 bg-white/2 border border-white/5 rounded-3xl relative z-10">
+                <CheckCircle2 className="w-14 h-14 text-emerald-400 mx-auto mb-3" />
+                <h4 className="text-base md:text-lg font-bold text-slate-200">
+                  {duplicateSearchTerm ? `No duplicate songs match "${duplicateSearchTerm}"` : "No duplicate songs found!"}
+                </h4>
+                <p className="text-xs md:text-sm text-slate-400 max-w-md mx-auto mt-1">
+                  {duplicateSearchTerm 
+                    ? "Try searching for a different song name or clear your filter to see all duplicates."
+                    : "Every song in your track library has a unique title. No duplicate names detected."}
+                </p>
+                {duplicateSearchTerm && (
+                  <button
+                    type="button"
+                    onClick={() => setDuplicateSearchTerm("")}
+                    className="mt-4 px-4 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-white text-xs font-bold transition-all"
+                  >
+                    Clear Search Filter
+                  </button>
+                )}
+              </div>
+            ) : (
+              <div className="space-y-4 max-h-[800px] overflow-y-auto pr-2 custom-scrollbar relative z-10">
+                {filteredDuplicateGroups.map((group, groupIdx) => (
+                  <div 
+                    key={groupIdx}
+                    className="bg-black/50 border border-amber-500/25 hover:border-amber-500/40 rounded-2xl p-5 transition-all shadow-lg space-y-4"
+                  >
+                    {/* Group Title Bar */}
+                    <div className="flex items-center justify-between pb-3 border-b border-white/5 flex-wrap gap-2">
+                      <div className="flex items-center space-x-2.5">
+                        <span className="w-7 h-7 rounded-lg bg-amber-500/20 text-amber-300 text-xs font-mono font-bold flex items-center justify-center">
+                          #{groupIdx + 1}
+                        </span>
+                        <h4 className="text-base font-black text-amber-300 tracking-wide">
+                          "{group.name}"
+                        </h4>
+                        <span className="px-2.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30 text-xs font-mono font-bold">
+                          {group.songs.length} copies found
+                        </span>
+                      </div>
+
+                      <div className="flex items-center space-x-2">
+                        <span className="text-[11px] text-slate-400 font-mono">
+                          Action: Pick which copy to keep
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* List of Copies for this Song Name */}
+                    <div className="space-y-3">
+                      {group.songs.map((song, copyIdx) => (
+                        <div 
+                          key={song.id}
+                          className="flex flex-col lg:flex-row lg:items-center justify-between p-3.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/5 gap-3 transition-colors"
+                        >
+                          <div className="flex items-center space-x-3.5 min-w-0">
+                            {/* Cover Art & Audio Preview Button */}
+                            <div className="relative w-14 h-14 rounded-xl overflow-hidden bg-black/50 border border-white/10 flex-shrink-0">
+                              <img 
+                                src={song.imageUrl} 
+                                alt={song.title} 
+                                className="w-full h-full object-cover" 
+                                referrerPolicy="no-referrer"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => togglePreview(song)}
+                                className="absolute inset-0 bg-black/40 hover:bg-black/60 flex items-center justify-center transition-colors text-white"
+                                title="Listen to preview"
+                              >
+                                {previewSongId === song.id && isPlayingPreview ? (
+                                  <Pause className="w-6 h-6 text-amber-400" />
+                                ) : (
+                                  <Play className="w-6 h-6 text-white" />
+                                )}
+                              </button>
+                            </div>
+
+                            <div className="min-w-0 space-y-0.5">
+                              <div className="flex items-center space-x-2">
+                                <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-white/10 text-slate-300 font-bold">
+                                  Copy #{copyIdx + 1}
+                                </span>
+                                <h5 className="text-sm font-bold text-white truncate">
+                                  {song.title}
+                                </h5>
+                              </div>
+                              <p className="text-xs text-slate-300">
+                                Artist: <strong className="text-white">{song.artist}</strong> • Album: <span className="text-slate-400">{song.album || "Single"}</span>
+                              </p>
+                              <div className="flex items-center space-x-3 text-[10px] text-slate-400 font-mono">
+                                <span>Duration: {formatTime(song.duration)}</span>
+                                <span>•</span>
+                                <span>Added: {new Date(song.createdAt).toLocaleDateString()}</span>
+                                {song.categories && song.categories.length > 0 && (
+                                  <>
+                                    <span>•</span>
+                                    <span>{song.categories.join(", ")}</span>
+                                  </>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Action Buttons for Duplicate Copy */}
+                          <div className="flex items-center space-x-2 self-end lg:self-auto flex-shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => handleKeepOneDeleteDuplicates(song, group.songs)}
+                              className="px-3.5 py-2 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30 text-xs font-bold transition-colors flex items-center space-x-1.5 shadow-sm"
+                              title="Keep this copy and delete the others"
+                            >
+                              <Check className="w-4 h-4" />
+                              <span>Keep This & Delete Others</span>
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setActiveTab("songs");
+                                startEditSong(song);
+                              }}
+                              className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-slate-300 hover:text-white border border-white/10 transition-colors"
+                              title="Edit track details"
+                            >
+                              <Edit className="w-4 h-4" />
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteSong(song.id)}
+                              className="p-2 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-300 hover:text-red-200 border border-red-500/20 transition-colors"
+                              title="Delete this copy"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
@@ -3395,16 +3898,6 @@ function AdminApp() {
           <p>skplayer Admin Console — Powered by Local Storage & Firebase Firestore</p>
           <p className="mt-1 text-[10px] text-slate-600">Created with Glassmorphism Liquid Theme</p>
         </footer>
-
-        {/* Edge-to-Edge Full Screen Music Folder Sequential Upload Modal */}
-        <AdminFolderUploadModal
-          isOpen={showFolderUploadModal}
-          onClose={() => setShowFolderUploadModal(false)}
-          artistsList={artistsList}
-          categories={categories}
-          onSongAdded={fetchSongs}
-          onShowToast={showAdminToast}
-        />
       </div>
     </div>
   );
