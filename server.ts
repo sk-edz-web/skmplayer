@@ -174,6 +174,38 @@ async function startServer() {
       const filename = `${prefix}-${Date.now()}-${Math.floor(Math.random() * 100000)}.${extension}`;
       const filePath = path.join(uploadsDir, filename);
 
+      // Attempt server-side Cloudinary upload if env vars exist
+      const cloudName = process.env.CLOUDINARY_CLOUD_NAME || process.env.VITE_CLOUDINARY_CLOUD_NAME;
+      const uploadPreset = process.env.CLOUDINARY_UPLOAD_PRESET || process.env.VITE_CLOUDINARY_UPLOAD_PRESET;
+
+      if (cloudName && uploadPreset) {
+        try {
+          const resourceType = isImage ? "image" : "video";
+          const cloudUrl = `https://api.cloudinary.com/v1_1/${cloudName}/${resourceType}/upload`;
+          const response = await fetch(cloudUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              file: file,
+              upload_preset: uploadPreset
+            })
+          });
+          if (response.ok) {
+            const cloudData = await response.json();
+            if (cloudData.secure_url) {
+              console.log(`[API Upload] Successfully uploaded via Cloudinary server API: ${cloudData.secure_url}`);
+              return res.json({
+                secure_url: cloudData.secure_url,
+                format: cloudData.format || extension,
+                duration: cloudData.duration || null,
+              });
+            }
+          }
+        } catch (cErr) {
+          console.warn("[API Upload] Server-side Cloudinary upload warning, using local file storage:", cErr);
+        }
+      }
+
       const buffer = Buffer.from(base64Data, "base64");
       fs.writeFileSync(filePath, buffer);
       console.log(`[API Upload] Saved ${prefix} locally at: ${filePath}`);

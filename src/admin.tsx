@@ -73,133 +73,18 @@ import {
   Zap,
   Users,
   UserCheck,
-  AlignLeft
+  AlignLeft,
+  Cloud
 } from "lucide-react";
 import { Song, ReportItem, ReportStatus, AppNotification, SubscriptionKey, ArtistProfile } from "./types";
 import AdminReportsManager from "./components/AdminReportsManager";
 import AdminArtistsManager from "./components/AdminArtistsManager";
+import AdminCloudinaryManager from "./components/AdminCloudinaryManager";
+import { uploadToCloudinaryDirect } from "./lib/cloudinary";
 import { parseLyrics, hasLyrics, fetchLyricsFromUrl } from "./utils/lyricsParser";
+import { extractAudioFileMetadata, ExtractedAudioMetadata } from "./utils/audioMetadataParser";
 import LyricBadge from "./components/LyricBadge";
 import "./index.css";
-
-interface ID3Metadata {
-  title?: string;
-  artist?: string;
-  album?: string;
-  coverUrl?: string;
-}
-
-function parseID3Tags(buffer: ArrayBuffer): ID3Metadata {
-  const view = new DataView(buffer);
-  const result: ID3Metadata = {};
-
-  if (view.byteLength < 10) return result;
-  if (view.getUint8(0) !== 0x49 || view.getUint8(1) !== 0x44 || view.getUint8(2) !== 0x33) {
-    return result;
-  }
-
-  const b1 = view.getUint8(6);
-  const b2 = view.getUint8(7);
-  const b3 = view.getUint8(8);
-  const b4 = view.getUint8(9);
-  const id3Size = ((b1 & 0x7F) << 21) | ((b2 & 0x7F) << 14) | ((b3 & 0x7F) << 7) | (b4 & 0x7F);
-
-  let offset = 10;
-  const tagVersion = view.getUint8(3);
-  
-  while (offset < id3Size && offset < view.byteLength - 10) {
-    let frameId = "";
-    for (let i = 0; i < 4; i++) {
-      frameId += String.fromCharCode(view.getUint8(offset + i));
-    }
-    
-    if (frameId.charCodeAt(0) === 0) break;
-
-    let frameSize = 0;
-    if (tagVersion === 4) {
-      const s1 = view.getUint8(offset + 4);
-      const s2 = view.getUint8(offset + 5);
-      const s3 = view.getUint8(offset + 6);
-      const s4 = view.getUint8(offset + 7);
-      frameSize = ((s1 & 0x7F) << 21) | ((s2 & 0x7F) << 14) | ((s3 & 0x7F) << 7) | (s4 & 0x7F);
-    } else {
-      frameSize = view.getUint32(offset + 4);
-    }
-
-    if (frameSize <= 0 || frameSize > view.byteLength - offset) {
-      break;
-    }
-
-    const frameDataOffset = offset + 10;
-    
-    if (frameId === "TIT2" || frameId === "TPE1" || frameId === "TALB") {
-      try {
-        const encoding = view.getUint8(frameDataOffset);
-        let text = "";
-        if (encoding === 0 || encoding === 3) {
-          const bytes = new Uint8Array(buffer, frameDataOffset + 1, frameSize - 1);
-          const end = bytes.indexOf(0);
-          const actualBytes = end === -1 ? bytes : bytes.subarray(0, end);
-          text = new TextDecoder("utf-8").decode(actualBytes).trim();
-        } else if (encoding === 1 || encoding === 2) {
-          const bytes = new Uint8Array(buffer, frameDataOffset + 1, frameSize - 1);
-          text = new TextDecoder("utf-16").decode(bytes).trim();
-        }
-        
-        if (text) {
-          if (frameId === "TIT2") result.title = text;
-          else if (frameId === "TPE1") result.artist = text;
-          else if (frameId === "TALB") result.album = text;
-        }
-      } catch (err) {
-        console.warn("Failed to decode text frame:", frameId, err);
-      }
-    } else if (frameId === "APIC") {
-      try {
-        const encoding = view.getUint8(frameDataOffset);
-        let mimeTypeOffset = frameDataOffset + 1;
-        let mimeType = "";
-        while (view.getUint8(mimeTypeOffset) !== 0 && mimeTypeOffset < view.byteLength) {
-          mimeType += String.fromCharCode(view.getUint8(mimeTypeOffset));
-          mimeTypeOffset++;
-        }
-        mimeTypeOffset++;
-        
-        const pictureType = view.getUint8(mimeTypeOffset);
-        let descriptionOffset = mimeTypeOffset + 1;
-        
-        if (encoding === 1 || encoding === 2) {
-          while (descriptionOffset < view.byteLength - 1 && (view.getUint8(descriptionOffset) !== 0 || view.getUint8(descriptionOffset + 1) !== 0)) {
-            descriptionOffset += 2;
-          }
-          descriptionOffset += 2;
-        } else {
-          while (view.getUint8(descriptionOffset) !== 0 && descriptionOffset < view.byteLength) {
-            descriptionOffset++;
-          }
-          descriptionOffset++;
-        }
-        
-        const picSize = frameSize - (descriptionOffset - frameDataOffset);
-        if (picSize > 0 && descriptionOffset + picSize <= view.byteLength) {
-          const picBytes = new Uint8Array(buffer, descriptionOffset, picSize);
-          let binary = "";
-          for (let i = 0; i < picBytes.length; i++) {
-            binary += String.fromCharCode(picBytes[i]);
-          }
-          const base64 = btoa(binary);
-          result.coverUrl = `data:${mimeType || "image/jpeg"};base64,${base64}`;
-        }
-      } catch (err) {
-        console.warn("Failed to parse embedded APIC cover art frame", err);
-      }
-    }
-
-    offset += 10 + frameSize;
-  }
-
-  return result;
-}
 
 function AdminApp() {
   // Admin Authentication Gate State
@@ -212,7 +97,7 @@ function AdminApp() {
   const [isLoggingIn, setIsLoggingIn] = useState<boolean>(false);
 
   // Tab State
-  const [activeTab, setActiveTab] = useState<"songs" | "artists" | "keys" | "reports">("songs");
+  const [activeTab, setActiveTab] = useState<"songs" | "artists" | "keys" | "cloudinary" | "reports">("songs");
 
   // Artist Profiles State
   const [artistsList, setArtistsList] = useState<ArtistProfile[]>([]);
@@ -256,6 +141,19 @@ function AdminApp() {
   const [lyricsUrl, setLyricsUrl] = useState("");
   const [isFetchingLyricsUrl, setIsFetchingLyricsUrl] = useState(false);
   const [lyricsPreviewModalSong, setLyricsPreviewModalSong] = useState<Song | null>(null);
+
+  // Audio Metadata Auto-Fill State (Auto-extracts Artist, Title, Album, Duration, Cover Art from file)
+  const [autoFillMetadata, setAutoFillMetadata] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("admin_autofill_audio_metadata") !== "false";
+    } catch {
+      return true;
+    }
+  });
+  const [isExtractingMetadata, setIsExtractingMetadata] = useState<boolean>(false);
+  const [detectedMetadata, setDetectedMetadata] = useState<ExtractedAudioMetadata | null>(null);
+  const [selectedAudioFile, setSelectedAudioFile] = useState<File | null>(null);
+  const [isUploadingExtractedCover, setIsUploadingExtractedCover] = useState<boolean>(false);
 
   // Helper to compute SHA-256 hash using native Web Crypto API (No credentials exposed)
   const computeAdminHash = async (email: string, pass: string): Promise<string> => {
@@ -705,12 +603,49 @@ function AdminApp() {
     });
   };
 
-  // Direct Upload to Server helper via server-side proxy
+  // High-Speed Direct Upload helper (Cloudinary CDN Direct API with Server Fallback)
   const uploadFileToServer = async (file: File, type: "audio" | "image") => {
     const key = type === "audio" ? "audio_file" : "image_file";
-    setUploadProgress(prev => ({ ...prev, [key]: 10 }));
+    setUploadProgress(prev => ({ ...prev, [key]: 5 }));
     
     try {
+      // 1. Attempt High-Speed Direct Cloudinary CDN Upload First
+      try {
+        setStatusMessage(`Uploading ${type} directly to Cloudinary CDN...`);
+        const cloudinaryRes = await uploadToCloudinaryDirect(file, (percent) => {
+          setUploadProgress(prev => ({ ...prev, [key]: Math.min(99, percent) }));
+        });
+
+        setUploadProgress(prev => ({ ...prev, [key]: 100 }));
+        
+        if (type === "audio") {
+          try {
+            setStatusMessage("Auto-calculating track duration...");
+            const tempAudio = new Audio(cloudinaryRes.secure_url);
+            tempAudio.addEventListener("loadedmetadata", () => {
+              if (tempAudio.duration && !isNaN(tempAudio.duration)) {
+                setDuration(Math.round(tempAudio.duration));
+                setStatusMessage("Track duration calculated!");
+              }
+            });
+          } catch (durErr) {
+            console.warn("Could not get duration automatically:", durErr);
+          }
+        }
+
+        showAdminToast(`${type === "audio" ? "Song audio" : "Cover art"} uploaded to Cloudinary CDN! ☁️`, "success");
+        return cloudinaryRes.secure_url;
+      } catch (cloudErr: any) {
+        if (cloudErr.message === "CLOUDINARY_NOT_CONFIGURED") {
+          console.warn("[Upload] Cloudinary not configured yet. Attempting Express server fallback...");
+          setStatusMessage("Cloudinary not configured. Falling back to server upload...");
+        } else {
+          console.warn("[Upload] Cloudinary direct upload failed:", cloudErr);
+          setStatusMessage(`Cloudinary warning: ${cloudErr.message}. Falling back to server upload...`);
+        }
+      }
+
+      // 2. Server Fallback via Express /api/upload
       const base64 = await toBase64(file);
       setUploadProgress(prev => ({ ...prev, [key]: 45 }));
       
@@ -726,69 +661,123 @@ function AdminApp() {
       });
 
       if (!response.ok) {
-        throw new Error(`Upload failed with status ${response.status}`);
+        throw new Error(`Server upload failed with status ${response.status}`);
       }
 
-      setUploadProgress(prev => ({ ...prev, [key]: 85 }));
-      const data = await response.json();
-      
       setUploadProgress(prev => ({ ...prev, [key]: 100 }));
+      const data = await response.json();
       
       if (data.secure_url) {
         if (type === "audio") {
           try {
-            setStatusMessage("Auto-calculating song duration...");
             const tempAudio = new Audio(data.secure_url);
             tempAudio.addEventListener("loadedmetadata", () => {
-              setDuration(Math.round(tempAudio.duration));
-              setStatusMessage("Audio duration fetched successfully!");
+              if (tempAudio.duration && !isNaN(tempAudio.duration)) {
+                setDuration(Math.round(tempAudio.duration));
+              }
             });
-          } catch (durErr) {
-            console.warn("Could not get duration automatically:", durErr);
-          }
+          } catch {}
         }
         return data.secure_url;
       } else {
         throw new Error("No secure URL returned");
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error(`${type} upload error:`, error);
       setStatusMessage(`Error uploading ${type}: ${error instanceof Error ? error.message : "Upload failed"}`);
+      showAdminToast(`Upload error: Please configure Cloudinary in the "Cloudinary Storage" tab for reliable song uploads!`, "error");
       setUploadProgress(prev => ({ ...prev, [key]: 0 }));
       return null;
     }
   };
 
-  // Handle file picker selection
+  // Apply extracted audio metadata to form
+  const applyExtractedMetadata = async (meta: ExtractedAudioMetadata) => {
+    if (meta.title) setTitle(meta.title);
+    if (meta.artist) {
+      setArtist(meta.artist);
+      const matched = artistsList.find(
+        (a) => a.name.trim().toLowerCase() === meta.artist!.trim().toLowerCase()
+      );
+      if (matched) {
+        setSelectedArtistId(matched.id);
+        setSelectedArtistImage(matched.imageUrl);
+      }
+    }
+    if (meta.album) setAlbum(meta.album);
+    if (meta.duration && meta.duration > 0) setDuration(meta.duration);
+    if (meta.lyrics && !lyrics) setLyrics(meta.lyrics);
+
+    // Handle embedded Album Art Cover extracted from audio file
+    if (meta.coverFile) {
+      if (meta.coverDataUrl) {
+        setImageUrl(meta.coverDataUrl);
+        setImageStatus("available");
+      }
+
+      try {
+        setIsUploadingExtractedCover(true);
+        setStatusMessage("Uploading extracted album cover art to Cloudinary CDN...");
+        const coverRes = await uploadToCloudinaryDirect(meta.coverFile);
+        if (coverRes && coverRes.secure_url) {
+          setImageUrl(coverRes.secure_url);
+          setImageStatus("available");
+          showAdminToast("Album cover art auto-extracted & uploaded to Cloudinary! 🖼️", "success");
+        }
+      } catch (covErr) {
+        console.warn("Cover art upload fallback:", covErr);
+      } finally {
+        setIsUploadingExtractedCover(false);
+      }
+    }
+  };
+
+  // Handle file picker selection with instant metadata extraction
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>, type: "audio" | "image") => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    setStatusMessage(`Uploading ${type} securely via server backend...`);
+    if (type === "audio") {
+      setSelectedAudioFile(file);
+
+      // Instant Metadata Extraction (Runs in parallel with upload so UI fills immediately!)
+      if (autoFillMetadata) {
+        setIsExtractingMetadata(true);
+        setStatusMessage("Scanning audio file for ID3 metadata, artist & album art...");
+
+        extractAudioFileMetadata(file)
+          .then(async (meta) => {
+            setDetectedMetadata(meta);
+            setIsExtractingMetadata(false);
+            console.log("Extracted audio metadata:", meta);
+
+            await applyExtractedMetadata(meta);
+
+            const details: string[] = [];
+            if (meta.title) details.push(`Title: "${meta.title}"`);
+            if (meta.artist) details.push(`Artist: "${meta.artist}"`);
+            if (meta.album) details.push(`Album: "${meta.album}"`);
+            if (meta.coverFile) details.push("Cover Art extracted");
+
+            if (details.length > 0) {
+              showAdminToast(`✨ Auto-detected: ${details.join(" | ")}`, "success");
+              setStatusMessage(`Auto-filled metadata from audio file: ${details.join(" • ")}`);
+            }
+          })
+          .catch((err) => {
+            setIsExtractingMetadata(false);
+            console.warn("Metadata extraction warning:", err);
+          });
+      }
+    }
+
+    setStatusMessage(`Uploading ${type} securely via Cloudinary CDN...`);
     const uploadedUrl = await uploadFileToServer(file, type);
 
     if (uploadedUrl) {
       if (type === "audio") {
         setAudioUrl(uploadedUrl);
         setStatusMessage("Audio uploaded successfully!");
-
-        // Try parsing ID3 tags for auto-filling metadata
-        try {
-          const reader = new FileReader();
-          const blob = file.slice(0, 512 * 1024); // read first 512KB for metadata
-          reader.onload = async (event) => {
-            if (event.target?.result instanceof ArrayBuffer) {
-              const meta = parseID3Tags(event.target.result);
-              console.log("Parsed ID3 tags on upload:", meta);
-              if (meta.title) setTitle(meta.title);
-              if (meta.artist) setArtist(meta.artist);
-              if (meta.album) setAlbum(meta.album);
-            }
-          };
-          reader.readAsArrayBuffer(blob);
-        } catch (id3Err) {
-          console.warn("Could not parse ID3 tags on upload:", id3Err);
-        }
       } else {
         setImageUrl(uploadedUrl);
         setStatusMessage("Cover image uploaded successfully!");
@@ -1585,6 +1574,21 @@ function AdminApp() {
           </button>
 
           <button
+            onClick={() => setActiveTab("cloudinary")}
+            className={`flex items-center space-x-2 px-6 py-2.5 rounded-xl font-bold text-xs transition-all duration-300 ${
+              activeTab === "cloudinary"
+                ? "bg-gradient-to-r from-sky-500 via-cyan-500 to-blue-600 text-white shadow-lg shadow-cyan-500/25"
+                : "text-slate-400 hover:text-slate-200 hover:bg-white/5"
+            }`}
+          >
+            <Cloud className="w-4 h-4" />
+            <span>Cloudinary Storage</span>
+            <span className="text-[9px] font-mono font-bold px-1.5 py-0.5 rounded-md bg-cyan-500/20 text-cyan-300 border border-cyan-400/30 ml-1 uppercase">
+              CDN
+            </span>
+          </button>
+
+          <button
             onClick={() => setActiveTab("reports")}
             className={`flex items-center space-x-2 px-6 py-2.5 rounded-xl font-bold text-xs transition-all duration-300 relative ${
               activeTab === "reports"
@@ -1729,6 +1733,87 @@ function AdminApp() {
                           No matching track found in library.
                         </div>
                       )}
+                    </div>
+                  )}
+                </div>
+
+                {/* Audio File Metadata Auto-Fill Option Card */}
+                <div className="p-4 rounded-2xl bg-gradient-to-r from-cyan-950/40 via-blue-950/30 to-purple-950/20 border border-cyan-500/30 shadow-md transition-all hover:border-cyan-500/50">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center space-x-3 min-w-0 pr-3">
+                      <div className="w-9 h-9 rounded-xl bg-cyan-500/20 text-cyan-400 flex items-center justify-center border border-cyan-500/30 flex-shrink-0">
+                        <Sparkles className="w-5 h-5 animate-pulse" />
+                      </div>
+                      <div className="min-w-0">
+                        <div className="flex items-center space-x-2">
+                          <span className="text-xs font-bold text-slate-100 tracking-wide">
+                            Auto-Fill Info from Audio File
+                          </span>
+                          <span className="text-[9px] font-mono px-2 py-0.5 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 font-bold uppercase tracking-wider">
+                            Smart ID3 & Cover Art
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-slate-400 mt-0.5">
+                          Automatically extracts Artist, Title, Album, Duration & Embedded Album Art Cover directly when audio is uploaded.
+                        </p>
+                      </div>
+                    </div>
+
+                    <label className="relative inline-flex items-center cursor-pointer flex-shrink-0">
+                      <input
+                        type="checkbox"
+                        checked={autoFillMetadata}
+                        onChange={(e) => {
+                          const val = e.target.checked;
+                          setAutoFillMetadata(val);
+                          try {
+                            localStorage.setItem("admin_autofill_audio_metadata", String(val));
+                          } catch {}
+                          showAdminToast(
+                            val
+                              ? "Auto-fill metadata enabled! Details will fill automatically on audio upload. ✨"
+                              : "Auto-fill disabled. Manual input mode active.",
+                            "info"
+                          );
+                        }}
+                        className="sr-only peer"
+                      />
+                      <div className="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-cyan-500 shadow-inner"></div>
+                    </label>
+                  </div>
+
+                  {/* Detected metadata summary badge if active */}
+                  {detectedMetadata && (
+                    <div className="mt-3 pt-3 border-t border-cyan-500/20 flex flex-wrap items-center justify-between gap-2 text-xs">
+                      <div className="flex items-center space-x-2.5 min-w-0">
+                        {detectedMetadata.coverDataUrl && (
+                          <img
+                            src={detectedMetadata.coverDataUrl}
+                            alt="Extracted Cover"
+                            className="w-8 h-8 rounded-lg object-cover border border-cyan-400/40 shadow-sm flex-shrink-0"
+                          />
+                        )}
+                        <div className="min-w-0">
+                          <p className="text-[11px] text-slate-200 font-semibold truncate">
+                            ✨ {detectedMetadata.title || "Untitled"} {detectedMetadata.artist ? `by ${detectedMetadata.artist}` : ""}
+                          </p>
+                          <p className="text-[10px] text-cyan-300 font-mono truncate">
+                            {detectedMetadata.album ? `Album: ${detectedMetadata.album} • ` : ""}
+                            {detectedMetadata.duration ? `${Math.floor(detectedMetadata.duration / 60)}:${(detectedMetadata.duration % 60).toString().padStart(2, "0")} • ` : ""}
+                            {detectedMetadata.coverFile ? "Cover Art Extracted ✓" : "No Embedded Cover"}
+                            {isUploadingExtractedCover && " (Uploading art to Cloudinary...)"}
+                          </p>
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => applyExtractedMetadata(detectedMetadata)}
+                        className="px-2.5 py-1 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/35 text-cyan-300 border border-cyan-500/30 text-[10px] font-mono font-bold flex items-center space-x-1 transition-all"
+                      >
+                        <Zap className="w-3 h-3" />
+                        <span>Re-apply Details</span>
+                      </button>
                     </div>
                   )}
                 </div>
@@ -2099,7 +2184,7 @@ function AdminApp() {
                     />
 
                     {/* File picker for Audio */}
-                    <div className="relative flex items-center justify-center border border-dashed border-cyan-500/20 rounded-xl p-4 hover:border-cyan-400/40 transition-all group bg-white/5 cursor-pointer">
+                    <div className="relative flex items-center justify-center border border-dashed border-cyan-500/30 rounded-xl p-4 hover:border-cyan-400 transition-all group bg-white/5 cursor-pointer">
                       <input 
                         type="file" 
                         accept="audio/*"
@@ -2107,11 +2192,61 @@ function AdminApp() {
                         className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
                       />
                       <div className="text-center">
-                        <FileAudio className="w-6 h-6 text-slate-400 group-hover:text-cyan-400 mx-auto mb-1.5 transition-colors" />
-                        <span className="text-xs text-slate-300 font-medium block">Upload Audio File</span>
-                        <span className="text-[10px] text-slate-500 block">MP3, WAV, AAC, M4A up to 10MB</span>
+                        <FileAudio className="w-6 h-6 text-cyan-400 group-hover:scale-110 mx-auto mb-1.5 transition-transform" />
+                        <span className="text-xs text-slate-200 font-semibold block">
+                          {selectedAudioFile ? selectedAudioFile.name : "Select / Drop Audio File"}
+                        </span>
+                        <span className="text-[10px] text-cyan-400/80 block mt-0.5">
+                          {autoFillMetadata 
+                            ? "✨ Auto-fills Artist, Title, Album, Duration & Cover Art" 
+                            : "Direct Cloudinary Upload (MP3, M4A, WAV, AAC)"}
+                        </span>
                       </div>
                     </div>
+
+                    {/* Selected Audio File Status & Manual Scan Tool */}
+                    {selectedAudioFile && (
+                      <div className="flex items-center justify-between p-2.5 rounded-xl bg-cyan-950/30 border border-cyan-500/20 text-xs">
+                        <div className="flex items-center space-x-2 min-w-0">
+                          <FileAudio className="w-4 h-4 text-cyan-400 flex-shrink-0" />
+                          <div className="min-w-0">
+                            <p className="text-[11px] font-bold text-slate-200 truncate">{selectedAudioFile.name}</p>
+                            <p className="text-[10px] text-slate-400 font-mono">
+                              {(selectedAudioFile.size / (1024 * 1024)).toFixed(2)} MB
+                              {detectedMetadata?.title ? ` • Detected: "${detectedMetadata.title}"` : ""}
+                            </p>
+                          </div>
+                        </div>
+
+                        <button
+                          type="button"
+                          disabled={isExtractingMetadata}
+                          onClick={async () => {
+                            setIsExtractingMetadata(true);
+                            setStatusMessage("Scanning audio file metadata...");
+                            try {
+                              const meta = await extractAudioFileMetadata(selectedAudioFile);
+                              setDetectedMetadata(meta);
+                              await applyExtractedMetadata(meta);
+                              showAdminToast("Metadata scanned and applied to form! ✨", "success");
+                            } catch (e: any) {
+                              showAdminToast(`Scan failed: ${e.message}`, "error");
+                            } finally {
+                              setIsExtractingMetadata(false);
+                            }
+                          }}
+                          className="px-2.5 py-1 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/35 text-cyan-300 border border-cyan-500/30 text-[10px] font-mono font-bold flex items-center space-x-1 transition-colors flex-shrink-0 ml-2"
+                          title="Scan and extract details from this file"
+                        >
+                          {isExtractingMetadata ? (
+                            <Loader2 className="w-3 h-3 animate-spin" />
+                          ) : (
+                            <Sparkles className="w-3 h-3" />
+                          )}
+                          <span>{isExtractingMetadata ? "Scanning..." : "Scan & Fill"}</span>
+                        </button>
+                      </div>
+                    )}
 
                     {/* Progress bar */}
                     {uploadProgress.audio_file !== undefined && uploadProgress.audio_file > 0 && (
@@ -2880,6 +3015,11 @@ function AdminApp() {
             onUploadImage={(file) => uploadFileToServer(file, "image")}
             onShowToast={showAdminToast}
           />
+        )}
+
+        {/* Tab: Cloudinary Storage CDN */}
+        {activeTab === "cloudinary" && (
+          <AdminCloudinaryManager onShowToast={showAdminToast} />
         )}
 
         {/* Tab 4: Reports & Feedback Manager */}
