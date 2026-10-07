@@ -1,6 +1,6 @@
 {
-  "name": "sk_edz_media_player",
-  "description": "SK Edz Media Player is a premium music player featuring a glassy liquid theme, optimized for mobile controls, with Firestore real-time library sync and direct Cloudinary uploads.",
+  "name": "zync_media_player",
+  "description": "ZYNC is a next-generation high-fidelity music streaming platform featuring chromatic visualizers, edge-to-edge UI, real-time Firestore sync, and synchronized lyrics. Made by SKEDZ.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

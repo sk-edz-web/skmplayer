@@ -62,9 +62,10 @@ import {
   Bell,
   AlertTriangle,
   MessageSquare,
-  AlignLeft
+  AlignLeft,
+  ChevronLeft
 } from "lucide-react";
-import { Song, Playlist, UserProfile, VideoItem, AppNotification } from "./types";
+import { Song, Playlist, UserProfile, VideoItem, AppNotification, ArtistProfile } from "./types";
 import AuthPanel from "./components/AuthPanel";
 import MobilePlayerOverlay from "./components/MobilePlayerOverlay";
 import SpotifyLyricsOverlay from "./components/SpotifyLyricsOverlay";
@@ -73,6 +74,7 @@ import { hasLyrics } from "./utils/lyricsParser";
 import EqualizerModal, { EqSettings } from "./components/EqualizerModal";
 import ReportModal from "./components/ReportModal";
 import NotificationsCenter from "./components/NotificationsCenter";
+import ZyncLogo from "./components/ZyncLogo";
 import { saveLocalSong, getLocalSongs, deleteLocalSong, clearLocalSongs } from "./lib/localDb";
 
 interface ID3Metadata {
@@ -230,6 +232,10 @@ export default function App() {
 
   // Database Music State
   const [songs, setSongs] = useState<Song[]>([]);
+  const [firestoreArtists, setFirestoreArtists] = useState<ArtistProfile[]>([]);
+  const [activeArtistProfile, setActiveArtistProfile] = useState<ArtistProfile | null>(null);
+  const [selectedArtist, setSelectedArtist] = useState<string | null>(null);
+  const artistsScrollRef = useRef<HTMLDivElement | null>(null);
   const [playlists, setPlaylists] = useState<Playlist[]>([]);
   const [playlistDeleteConfirmId, setPlaylistDeleteConfirmId] = useState<string | null>(null);
   const [categories, setCategories] = useState<string[]>([]);
@@ -1056,6 +1062,21 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
+  // Listen to Database Artists (Real-time sync!)
+  useEffect(() => {
+    const unsubscribe = onSnapshot(collection(db, "artists"), (snapshot) => {
+      const artistList: ArtistProfile[] = [];
+      snapshot.forEach((docSnap) => {
+        artistList.push({ id: docSnap.id, ...docSnap.data() } as ArtistProfile);
+      });
+      setFirestoreArtists(artistList);
+    }, (error) => {
+      console.warn("Artists subscription error:", error);
+    });
+
+    return () => unsubscribe();
+  }, []);
+
   // Listen to Database Playlists (Real-time sync!)
   useEffect(() => {
     if (!user) {
@@ -1279,6 +1300,8 @@ export default function App() {
     setCurrentSongIndex(index);
     setIsPlaying(true);
     setIsBuffering(false);
+    // Open immersive edge-to-edge full screen player on PC & mobile
+    setIsMobileOverlayOpen(true);
 
 
 
@@ -1727,6 +1750,124 @@ export default function App() {
     );
   });
 
+  // Artists ONLY from manually created Firestore database (No auto-extracted random strings!)
+  const artistSummaries = useMemo(() => {
+    return firestoreArtists.map(artist => {
+      const artistName = (artist.name || "").trim().toLowerCase();
+      const matchingSongs = songs.filter(s => {
+        const songArtist = (s.artist || "").trim().toLowerCase();
+        return songArtist === artistName || songArtist.includes(artistName);
+      });
+
+      return {
+        ...artist,
+        name: artist.name,
+        count: matchingSongs.length,
+        imageUrl: artist.imageUrl || (matchingSongs[0]?.artistImage || matchingSongs[0]?.imageUrl),
+        songs: matchingSongs
+      };
+    });
+  }, [firestoreArtists, songs]);
+
+  // Songs to display in Discover view
+  const displayedSongs = filteredSongs;
+
+  // Smooth scroll handler for artists carousel
+  const scrollArtists = (direction: "left" | "right") => {
+    if (artistsScrollRef.current) {
+      const scrollAmount = 300;
+      artistsScrollRef.current.scrollBy({
+        left: direction === "left" ? -scrollAmount : scrollAmount,
+        behavior: "smooth"
+      });
+    }
+  };
+
+  // Direct 1-Click Subscription Purchase & Firestore Database Save
+  const handleDirectSubscribe = async (planType: 99 | 199 = 99) => {
+    if (!user) {
+      setActiveTab("account");
+      setProKeyError("Please sign in to your account first to activate your ZYNC VIP subscription.");
+      return;
+    }
+    setProKeyLoading(true);
+    setProKeyError("");
+    setProKeySuccess("");
+
+    try {
+      const now = Date.now();
+      const durationDays = planType === 199 ? 60 : 30;
+      const calculatedExpiresAt = now + durationDays * 24 * 60 * 60 * 1000;
+      const expiresISO = new Date(calculatedExpiresAt).toISOString();
+      const expiresFormatted = new Date(calculatedExpiresAt).toLocaleDateString();
+      const planTitle = planType === 199 ? "₹199 ZYNC VIP Master Pass (60 Days)" : "₹99 ZYNC VIP Gold Pass (30 Days)";
+
+      // Direct Firebase users document update with active stats
+      const userDocRef = doc(db, "users", user.uid);
+      await setDoc(userDocRef, {
+        uid: user.uid,
+        email: user.email || "",
+        displayName: user.displayName || user.email?.split("@")[0] || "ZYNC Member",
+        isPro: true,
+        subscriptionStatus: "active",
+        plan: planType,
+        planName: planTitle,
+        tier: planType === 199 ? "master" : "gold",
+        keyStatus: "active",
+        proActivatedAt: now,
+        proExpiresAt: calculatedExpiresAt,
+        proExpiresAtDate: expiresISO,
+        proExpiresAtFormatted: expiresFormatted,
+        activeStats: {
+          status: "active",
+          plan: planType,
+          tier: planType === 199 ? "master" : "gold",
+          activatedAt: now,
+          expiresAt: calculatedExpiresAt,
+          lastActive: now,
+          syncSource: "firebase_direct_save"
+        },
+        updatedAt: now
+      }, { merge: true });
+
+      // Direct Firebase top-level subscriptions document
+      const subDocRef = doc(db, "subscriptions", user.uid);
+      await setDoc(subDocRef, {
+        userId: user.uid,
+        userEmail: user.email || "",
+        userName: user.displayName || "ZYNC Member",
+        status: "active",
+        plan: planType,
+        planName: planTitle,
+        tier: planType === 199 ? "master" : "gold",
+        activatedAt: now,
+        expiresAt: calculatedExpiresAt,
+        updatedAt: now
+      }, { merge: true });
+
+      // Immediate local state update
+      setUserProfile(prev => ({
+        ...(prev || { uid: user.uid, email: user.email || "", createdAt: now }),
+        isPro: true,
+        plan: planType,
+        planName: planTitle,
+        tier: planType === 199 ? "master" : "gold",
+        proActivatedAt: now,
+        proExpiresAt: calculatedExpiresAt,
+        proExpiresAtDate: expiresISO,
+        proExpiresAtFormatted: expiresFormatted
+      }));
+
+      setIsUpgradePopupOpen(false);
+      setProKeySuccess(`👑 Active stats saved directly to Firebase! ${planTitle} is now live.`);
+    } catch (err) {
+      console.error("Direct Firebase subscription save error:", err);
+      setProKeyError("Subscription save failed. Please check your network connection.");
+    } finally {
+      setProKeyLoading(false);
+    }
+  };
+
   useEffect(() => {
     const savedQuality = localStorage.getItem("skplayer_audio_quality");
     if (savedQuality === "128" || savedQuality === "320") {
@@ -1804,108 +1945,23 @@ export default function App() {
   };
 
   const getGlassClass = (additionalClasses = "") => {
-    let style = "";
-    if (glassEffectEnabled) {
-      switch (selectedTheme) {
-        case "dark":
-          style = "bg-black/45 backdrop-blur-3xl border border-white/12 shadow-[0_16px_50px_rgba(0,0,0,0.65)] text-slate-100 hover:border-purple-500/30 hover:shadow-purple-500/10 transition-all duration-300 rounded-3xl";
-          break;
-        case "gold":
-          if (goldUiStyle === "royal") {
-            style = `bg-amber-950/15 backdrop-blur-3xl border ${goldBordersEnabled ? "border-amber-400/50" : "border-white/12"} shadow-[0_20px_50px_rgba(0,0,0,0.7)] text-amber-100 hover:border-amber-400/60 hover:shadow-amber-500/15 transition-all duration-300 rounded-3xl`;
-          } else {
-            style = `bg-zinc-950/70 backdrop-blur-3xl border ${goldBordersEnabled ? "border-amber-400/60 shadow-[0_0_12px_rgba(245,158,11,0.3)]" : "border-white/12"} shadow-[0_20px_50px_rgba(0,0,0,0.8)] text-amber-50 hover:border-amber-400/50 transition-all duration-300 rounded-3xl`;
-          }
-          break;
-        case "liquid":
-          style = "bg-gradient-to-br from-pink-500/8 via-purple-500/8 to-indigo-500/8 backdrop-blur-3xl border border-white/15 shadow-[0_20px_50px_rgba(0,0,0,0.6)] text-slate-100 hover:border-pink-500/40 hover:shadow-pink-500/15 transition-all duration-300 rounded-3xl";
-          break;
-        default:
-          style = "bg-black/45 backdrop-blur-3xl border border-white/12 shadow-[0_16px_45px_rgba(0,0,0,0.55)] text-slate-100 hover:border-cyan-400/40 hover:shadow-cyan-500/15 transition-all duration-300 rounded-3xl";
-          break;
-      }
-    } else {
-      switch (selectedTheme) {
-        case "dark":
-          style = "bg-[#0b0b0e] border border-zinc-800 text-slate-100 shadow-md";
-          break;
-        case "gold":
-          if (goldUiStyle === "royal") {
-            style = `bg-[#130f06] border ${goldBordersEnabled ? "border-amber-600/35" : "border-zinc-800"} text-amber-100 shadow-md`;
-          } else {
-            style = `bg-[#171510] border ${goldBordersEnabled ? "border-amber-400/50 shadow-[0_0_10px_rgba(245,158,11,0.15)]" : "border-zinc-800"} text-amber-50 shadow-md`;
-          }
-          break;
-        case "liquid":
-          style = "bg-[#1a0f2e] border border-pink-500/30 text-slate-100 shadow-lg";
-          break;
-        default:
-          style = "bg-[#0f1123] border border-slate-800 text-slate-100 shadow-lg";
-          break;
-      }
-    }
-
-    // Apply global Gold Borders overlay across ALL themes
-    if (goldBordersEnabled && selectedTheme !== "gold") {
-      style = style.replace(/border-[^\s]+/g, "");
-      style += " border border-amber-400/55 shadow-[0_0_12px_rgba(245,158,11,0.25)]";
-    }
-
-    return `${style} ${additionalClasses}`;
+    return `bg-[#0d131f] border border-white/10 shadow-[0_12px_40px_rgba(0,0,0,0.6)] text-slate-100 hover:border-cyan-400/30 transition-all duration-300 rounded-3xl ${additionalClasses}`;
   };
 
-  const currentThemeActive = themeAccents[selectedTheme] || themeAccents.default;
+  const currentThemeActive = themeAccents.default;
 
   const getBodyBgStyle = () => {
-    switch (selectedTheme) {
-      case "dark":
-        return "bg-[#030305] text-slate-100";
-      case "gold":
-        if (goldUiStyle === "royal") {
-          return "bg-[#080602] text-amber-100";
-        } else {
-          return "bg-[#090805] text-amber-50";
-        }
-      case "liquid":
-        return "bg-[#05010a] text-slate-100";
-      default:
-        return "bg-[#070811] text-slate-100";
-    }
+    return "bg-[#070a12] text-slate-100";
   };
 
   const backgroundBlobs = useMemo(() => {
-    switch (selectedTheme) {
-      case "dark":
-        return (
-          <div className="fixed inset-0 pointer-events-none overflow-hidden z-0 transform-gpu">
-            <div className="absolute top-[-20%] left-[-15%] w-[60vw] h-[60vw] rounded-full blur-[90px] pointer-events-none animate-blob bg-purple-950/25 transform-gpu"></div>
-            <div className="absolute bottom-[-10%] right-[-15%] w-[60vw] h-[60vw] rounded-full blur-[90px] pointer-events-none animate-blob bg-indigo-950/30 transform-gpu" style={{ animationDelay: "-5s" }}></div>
-          </div>
-        );
-      case "gold":
-        return (
-          <div className="fixed inset-0 pointer-events-none overflow-hidden z-0 transform-gpu">
-            <div className={`absolute top-[-20%] left-[-15%] w-[60vw] h-[60vw] rounded-full blur-[90px] pointer-events-none animate-blob ${goldGlitterEnabled ? "bg-amber-600/20" : "bg-amber-600/8"} transform-gpu`}></div>
-            <div className={`absolute bottom-[-10%] right-[-15%] w-[60vw] h-[60vw] rounded-full blur-[90px] pointer-events-none animate-blob ${goldGlitterEnabled ? "bg-yellow-600/20" : "bg-yellow-600/8"} transform-gpu`} style={{ animationDelay: "-5s" }}></div>
-          </div>
-        );
-      case "liquid":
-        return (
-          <div className="fixed inset-0 pointer-events-none overflow-hidden z-0 transform-gpu">
-            <div className="absolute top-[-20%] left-[-15%] w-[65vw] h-[65vw] rounded-full blur-[90px] pointer-events-none animate-blob bg-pink-500/18 transform-gpu"></div>
-            <div className="absolute bottom-[-10%] right-[-15%] w-[65vw] h-[65vw] rounded-full blur-[90px] pointer-events-none animate-blob bg-purple-600/18 transform-gpu" style={{ animationDelay: "-4s" }}></div>
-            <div className="absolute top-[30%] left-[40%] w-[35vw] h-[35vw] rounded-full blur-[90px] pointer-events-none animate-blob bg-indigo-500/12 transform-gpu" style={{ animationDelay: "-8s" }}></div>
-          </div>
-        );
-      default:
-        return (
-          <div className="fixed inset-0 pointer-events-none overflow-hidden z-0 transform-gpu">
-            <div className="absolute top-[-20%] left-[-15%] w-[60vw] h-[60vw] rounded-full blur-[90px] pointer-events-none animate-blob bg-cyan-600/12 transform-gpu"></div>
-            <div className="absolute bottom-[-10%] right-[-15%] w-[60vw] h-[60vw] rounded-full blur-[90px] pointer-events-none animate-blob bg-fuchsia-600/12 transform-gpu" style={{ animationDelay: "-5s" }}></div>
-          </div>
-        );
-    }
-  }, [selectedTheme, goldGlitterEnabled]);
+    return (
+      <div className="fixed inset-0 pointer-events-none overflow-hidden z-0 transform-gpu">
+        <div className="absolute top-[-20%] left-[-15%] w-[60vw] h-[60vw] rounded-full blur-[100px] pointer-events-none animate-blob bg-cyan-500/10 transform-gpu"></div>
+        <div className="absolute bottom-[-10%] right-[-15%] w-[60vw] h-[60vw] rounded-full blur-[100px] pointer-events-none animate-blob bg-indigo-600/10 transform-gpu" style={{ animationDelay: "-5s" }}></div>
+      </div>
+    );
+  }, []);
 
   const glitterParticles = useMemo(() => {
     if (!goldGlitterEnabled) return null;
@@ -2034,24 +2090,14 @@ export default function App() {
         {/* Glow effect */}
         <div className="absolute w-64 h-64 bg-cyan-500/10 rounded-full blur-[80px]"></div>
         
-        {/* SK Animated Letters */}
+        {/* ZYNC Animated Emblem */}
         <div className="relative flex flex-col items-center">
           <div className="flex items-center space-x-2.5 mb-6">
-            <div className="relative flex items-center justify-center w-20 h-20 rounded-3xl bg-gradient-to-tr from-cyan-400 via-indigo-500 to-fuchsia-500 p-[2.5px] shadow-2xl">
-              <div className="absolute inset-0 rounded-3xl bg-gradient-to-tr from-cyan-400 via-indigo-500 to-fuchsia-500 blur-md opacity-75 animate-pulse"></div>
-              <div className="relative w-full h-full bg-[#04050a] rounded-[22px] flex items-center justify-center overflow-hidden">
-                <span className="text-2xl font-black bg-gradient-to-r from-cyan-400 via-white to-fuchsia-400 bg-clip-text text-transparent animate-pulse tracking-wide">
-                  SK
-                </span>
-              </div>
-            </div>
+            <ZyncLogo size="xl" showSubtitle={true} showText={true} />
           </div>
           
-          <h2 className="text-sm font-black tracking-widest text-slate-100 uppercase animate-pulse">
-            sk edz player
-          </h2>
-          <p className="text-[10px] text-slate-500 font-mono tracking-wider mt-1.5 uppercase">
-            Syncing secure audio session...
+          <p className="text-[11px] text-slate-400 font-mono tracking-wider mt-2 uppercase">
+            Syncing high-fidelity audio session...
           </p>
         </div>
       </div>
@@ -2060,38 +2106,13 @@ export default function App() {
 
   if (!user) {
     return (
-      <div className="relative min-h-screen w-full flex flex-col justify-center items-center bg-[#04050a] overflow-hidden p-6">
-        {/* Background Floating Blobs */}
-        <div className="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 w-80 h-80 rounded-full bg-cyan-500/10 blur-[80px] pointer-events-none animate-pulse"></div>
-        <div className="absolute bottom-1/3 left-1/3 w-72 h-72 rounded-full bg-indigo-500/5 blur-[90px] pointer-events-none animate-pulse" style={{ animationDelay: "1.5s" }}></div>
+      <div className="relative min-h-screen w-full flex flex-col justify-center items-center bg-[#070a12] p-4 sm:p-6 selection:bg-cyan-500 selection:text-black">
+        {/* Subtle Ambient Background */}
+        <div className="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 w-96 h-96 rounded-full bg-cyan-500/10 blur-[100px] pointer-events-none"></div>
+        <div className="absolute bottom-1/4 right-1/3 w-80 h-80 rounded-full bg-indigo-500/10 blur-[100px] pointer-events-none"></div>
         
         <div className="w-full max-w-md z-10 flex flex-col items-center">
-          {/* Logo & Brand Display */}
-          <div className="flex items-center space-x-3 mb-6">
-            <div className="w-11 h-11 rounded-2xl bg-gradient-to-tr from-cyan-400 via-indigo-500 to-fuchsia-500 p-[2px] flex items-center justify-center shadow-lg shadow-cyan-500/10">
-              <img 
-                src="https://i.ibb.co/fd4wBk6f/Picsart-26-07-09-00-40-05-863.jpg" 
-                alt="sk edz Logo" 
-                className="w-full h-full object-cover rounded-2xl" 
-                referrerPolicy="no-referrer"
-              />
-            </div>
-            <div>
-              <h1 className="text-2xl font-black tracking-tight text-white bg-gradient-to-r from-cyan-400 via-white to-fuchsia-400 bg-clip-text text-transparent">sk edz</h1>
-              <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">PREMIUM AUDIO HUB</p>
-            </div>
-          </div>
-
-          <div className="w-full bg-[#0a0d1d]/85 border border-white/10 rounded-[32px] p-6 md:p-8 backdrop-blur-2xl shadow-2xl relative">
-            <div className="absolute top-0 right-0 w-32 h-32 bg-cyan-500/5 rounded-full blur-3xl pointer-events-none"></div>
-            
-            <div className="text-center mb-6">
-              <h2 className="text-lg font-bold text-slate-100">Access Restricted</h2>
-              <p className="text-xs text-slate-400 mt-1">Please login or register to unlock premium liquid glass audio streaming</p>
-            </div>
-
-            <AuthPanel onSuccess={() => {}} />
-          </div>
+          <AuthPanel onSuccess={() => {}} />
         </div>
       </div>
     );
@@ -2106,50 +2127,37 @@ export default function App() {
       {/* Dynamic Glitter Particles Ambiance */}
       {glitterParticles}
 
-      {/* Primary Layout Wrapper */}
-      <div className={`flex flex-col flex-1 w-full max-w-7xl mx-auto relative z-10 px-4 md:px-6 py-4 md:py-6 gap-6 ${
+      {/* Primary Layout Wrapper - Full Screen Responsive Edge-to-Edge on PC */}
+      <div className={`flex flex-col flex-1 w-full max-w-[1920px] mx-auto relative z-10 px-3 sm:px-6 md:px-8 xl:px-10 py-3 md:py-6 gap-6 ${
         currentSong ? "mb-36 md:mb-28" : "mb-20 md:mb-24"
       }`}>
         
         {/* Unified Glass Header Navigation */}
-        <header className="flex items-center justify-between p-4 md:p-5 glass-card rounded-[28px] border border-white/10 relative overflow-hidden shadow-2xl">
+        <header className="flex items-center justify-between p-3.5 md:p-5 glass-card rounded-[28px] border border-white/10 relative overflow-hidden shadow-2xl">
           {/* Glass Sheen / Reflective Highlight Line */}
           <div className="absolute top-0 inset-x-0 h-[1.5px] bg-gradient-to-r from-transparent via-white/25 to-transparent rounded-t-[28px] pointer-events-none"></div>
           
-          {/* Logo Brand */}
+          {/* ZYNC Brand Logo */}
           <div className="flex items-center space-x-3.5 relative z-10">
-            <div className="p-[3px] rounded-2xl bg-white/10 backdrop-blur-md shadow-[0_4px_20px_rgba(255,255,255,0.12)] border border-white/20 overflow-hidden w-11 h-11 flex items-center justify-center transform hover:scale-110 hover:rotate-3 transition-all duration-300 cursor-pointer">
-              <img 
-                src="https://i.ibb.co/fd4wBk6f/Picsart-26-07-09-00-40-05-863.jpg" 
-                alt="sk edz Logo" 
-                className="w-full h-full object-cover rounded-xl" 
-                referrerPolicy="no-referrer"
-              />
-            </div>
-            <div>
-              <div className="flex items-center space-x-2">
-                <span className="text-base md:text-lg font-black tracking-tight bg-gradient-to-r from-cyan-400 via-white to-fuchsia-400 bg-clip-text text-transparent">sk edz</span>
-                
-                {/* Micro bounce visualizer next to title */}
-                <div className="flex items-end space-x-0.5 h-3 px-1 mb-0.5">
-                  {[...Array(3)].map((_, i) => (
-                    <div 
-                      key={`header-eq-${i}`} 
-                      className={`w-0.5 bg-cyan-400 transition-all duration-300 ${isPlaying ? "animate-audio-bar" : "h-1"}`}
-                      style={{ 
-                        animationDelay: `${i * 0.2}s`, 
-                        animationDuration: "0.6s",
-                        height: isPlaying ? "auto" : "3px"
-                      }}
-                    ></div>
-                  ))}
-                </div>
-              </div>
-              <p className="text-[9px] text-slate-400 font-mono tracking-wider uppercase flex items-center gap-1.5">
-                <span>Liquid Glass Audio</span>
-                <span className="w-1 h-1 rounded-full bg-cyan-400 animate-ping"></span>
-                <span className="text-cyan-400 font-bold">Premium</span>
-              </p>
+            <ZyncLogo 
+              size="md" 
+              showSubtitle={true} 
+              showText={true} 
+              onClick={() => { setActiveTab("home"); setSelectedPlaylist(null); }}
+            />
+            {/* Micro bounce visualizer next to title */}
+            <div className="hidden sm:flex items-end space-x-0.5 h-3 px-1 mb-0.5">
+              {[...Array(3)].map((_, i) => (
+                <div 
+                  key={`header-eq-${i}`} 
+                  className={`w-0.5 bg-cyan-400 transition-all duration-300 ${isPlaying ? "animate-audio-bar" : "h-1"}`}
+                  style={{ 
+                    animationDelay: `${i * 0.2}s`, 
+                    animationDuration: "0.6s",
+                    height: isPlaying ? "auto" : "3px"
+                  }}
+                ></div>
+              ))}
             </div>
           </div>
 
@@ -2263,7 +2271,7 @@ export default function App() {
               
               <div className="text-left hidden sm:block">
                 <span className="block text-xs font-black text-white truncate max-w-[100px]">
-                  {userProfile?.displayName || (user ? "skplayer Listener" : "Guest Listener")}
+                  {userProfile?.displayName || (user ? "ZYNC Listener" : "Guest Listener")}
                 </span>
                 <span className="block text-[8px] font-mono text-slate-400 leading-none">
                   {isGoldActive ? "👑 VIP GOLD" : "Standard"}
@@ -2281,101 +2289,375 @@ export default function App() {
           {/* 1. DISCOVER / HOME VIEW */}
           {activeTab === "home" && !selectedPlaylist && (
             <div className="space-y-6 animate-fade-in">
-              <div className="space-y-6">
-                {/* New Releases Section (Replaced Trending and removed play counts) */}
-              <div className="space-y-4">
-                <div className="flex justify-between items-center px-1">
-                  <div>
-                    <h2 className="text-base font-extrabold text-white flex items-center space-x-2">
-                      <Music className="w-4 h-4 text-cyan-400" />
-                      <span>New Songs</span>
-                    </h2>
-                    <p className="text-[11px] text-slate-400 font-sans">The latest additions to our music library</p>
+              {/* DEDICATED ARTIST PROFILE VIEW */}
+              {activeArtistProfile ? (
+                <div className="space-y-6 animate-fade-in">
+                  {/* Back Navigation Button */}
+                  <div className="flex items-center justify-between">
+                    <button
+                      onClick={() => setActiveArtistProfile(null)}
+                      className="inline-flex items-center space-x-2 text-xs font-bold text-slate-300 hover:text-white bg-[#0e1424] hover:bg-[#151f35] px-4 py-2.5 rounded-2xl border border-slate-800 transition-all active:scale-95 shadow-md cursor-pointer"
+                    >
+                      <ChevronLeft className="w-4 h-4 text-cyan-400" />
+                      <span>Back to Discover</span>
+                    </button>
                   </div>
-                </div>
 
-                <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-                  {loadingSongs ? (
-                    [...Array(4)].map((_, i) => (
-                      <div key={i} className="animate-pulse bg-white/5 border border-white/5 rounded-2xl p-3.5 h-32 md:h-36 flex flex-col justify-between">
-                        <div className="flex justify-between items-start">
-                          <div className="relative w-11 h-11 md:w-14 md:h-14 rounded-xl bg-gradient-to-tr from-cyan-500/10 via-indigo-500/10 to-fuchsia-500/10 border border-white/5 flex items-center justify-center">
-                            <span className="text-[10px] font-black text-cyan-400/50">SK</span>
-                          </div>
-                          <div className="h-4 w-12 rounded bg-white/5"></div>
+                  {/* Artist Hero Banner */}
+                  <div className="bg-[#0e1424] border border-slate-800/80 rounded-3xl p-6 md:p-8 relative overflow-hidden shadow-2xl">
+                    <div className="flex flex-col sm:flex-row items-center sm:items-start gap-6 relative z-10">
+                      <div className="relative w-28 h-28 md:w-36 md:h-36 rounded-full overflow-hidden border-2 border-cyan-400/80 shadow-[0_0_25px_rgba(0,242,254,0.3)] flex-shrink-0 bg-slate-950">
+                        <img
+                          src={activeArtistProfile.imageUrl || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(activeArtistProfile.name)}&backgroundColor=05070c,00f2fe`}
+                          alt={activeArtistProfile.name}
+                          className="w-full h-full object-cover"
+                          referrerPolicy="no-referrer"
+                        />
+                      </div>
+
+                      <div className="text-center sm:text-left flex-1 space-y-2">
+                        <div className="inline-flex items-center space-x-1.5 px-3 py-1 rounded-full bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 text-[10px] font-mono font-bold uppercase tracking-wider">
+                          <span>Verified Artist</span>
                         </div>
-                        <div className="space-y-1.5 mt-3">
-                          <div className="h-3 w-3/4 rounded bg-white/10"></div>
-                          <div className="h-2.5 w-1/2 rounded bg-white/5"></div>
-                          <div className="h-2 w-8 rounded bg-white/5"></div>
+                        <h1 className="text-2xl md:text-4xl font-extrabold text-white tracking-tight">
+                          {activeArtistProfile.name}
+                        </h1>
+                        {activeArtistProfile.bio && (
+                          <p className="text-xs md:text-sm text-slate-400 max-w-2xl leading-relaxed">
+                            {activeArtistProfile.bio}
+                          </p>
+                        )}
+                        <div className="flex items-center justify-center sm:justify-start space-x-3 pt-2">
+                          {(() => {
+                            const artistName = (activeArtistProfile.name || "").trim().toLowerCase();
+                            const artistTracks = songs.filter(s => {
+                              const sArtist = (s.artist || "").trim().toLowerCase();
+                              return sArtist === artistName || sArtist.includes(artistName);
+                            });
+                            return (
+                              <>
+                                <span className="text-xs font-mono text-slate-400">
+                                  {artistTracks.length} {artistTracks.length === 1 ? "track" : "tracks"}
+                                </span>
+                                {artistTracks.length > 0 && (
+                                  <button
+                                    onClick={() => playSong(0, artistTracks)}
+                                    className="inline-flex items-center space-x-2 px-5 py-2.5 rounded-2xl bg-cyan-500 hover:bg-cyan-400 text-black font-black text-xs transition-all duration-300 hover:scale-105 active:scale-95 shadow-[0_0_20px_rgba(0,242,254,0.35)] cursor-pointer"
+                                  >
+                                    <Play className="w-4 h-4 fill-current" />
+                                    <span>Play All Tracks</span>
+                                  </button>
+                                )}
+                              </>
+                            );
+                          })()}
                         </div>
                       </div>
-                    ))
-                  ) : songs.length === 0 ? (
-                    <div className="col-span-2 lg:col-span-4 p-8 text-center border border-dashed border-white/10 rounded-2xl text-xs text-slate-500 bg-white/5">
-                      No cloud tracks found. Load local files or publish some cloud tracks.
                     </div>
-                  ) : (
-                    songs.slice(0, 4).map((song, idx) => (
-                      <div 
-                        key={`new-release-${song.id}`}
-                        className={getGlassClass("group relative overflow-hidden transition-all duration-300 p-3.5 flex flex-col justify-between h-32 md:h-36 shadow-lg cursor-pointer hover:scale-[1.01]")}
-                        onClick={() => playSong(songs.indexOf(song), songs)}
+                  </div>
+
+                  {/* Artist's Songs Grid */}
+                  <div className="space-y-4">
+                    <h2 className="text-lg font-bold text-white flex items-center space-x-2">
+                      <Music className="w-5 h-5 text-cyan-400" />
+                      <span>{activeArtistProfile.name}'s Track Catalog</span>
+                    </h2>
+
+                    {(() => {
+                      const artistName = (activeArtistProfile.name || "").trim().toLowerCase();
+                      const artistTracks = songs.filter(s => {
+                        const sArtist = (s.artist || "").trim().toLowerCase();
+                        return sArtist === artistName || sArtist.includes(artistName);
+                      });
+
+                      if (artistTracks.length === 0) {
+                        return (
+                          <div className="p-10 border border-dashed border-slate-800 rounded-3xl bg-[#0e1424]/60 text-center">
+                            <Disc className="w-10 h-10 text-slate-600 mx-auto mb-3" />
+                            <h3 className="text-sm font-bold text-slate-300">No tracks published for {activeArtistProfile.name} yet</h3>
+                            <p className="text-xs text-slate-500 mt-1">Check back later or upload tracks in the Admin Hub.</p>
+                          </div>
+                        );
+                      }
+
+                      return (
+                        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-5 gap-3.5 md:gap-4">
+                          {artistTracks.map((song) => {
+                            const songIdx = songs.findIndex(s => s.id === song.id);
+                            return (
+                              <div 
+                                key={`artist-page-track-${song.id}`}
+                                className="group flex items-center justify-between p-3 bg-[#0e1424] hover:bg-[#141e35] border border-slate-800/80 hover:border-cyan-500/30 rounded-2xl transition-all duration-200 shadow-md"
+                              >
+                                <button 
+                                  type="button"
+                                  onClick={() => playSong(songIdx !== -1 ? songIdx : 0, songs)}
+                                  className="flex items-center space-x-3 min-w-0 flex-1 cursor-pointer text-left focus:outline-none"
+                                >
+                                  <div className="relative w-12 h-12 md:w-14 md:h-14 rounded-xl overflow-hidden bg-black/40 border border-slate-700/60 flex-shrink-0 shadow-md">
+                                    <img 
+                                      src={song.imageUrl} 
+                                      alt={song.title} 
+                                      className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105" 
+                                      referrerPolicy="no-referrer"
+                                    />
+                                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
+                                      {currentSong?.id === song.id ? (
+                                        isBuffering ? (
+                                          <Loader2 className="w-5 h-5 text-cyan-400 animate-spin" />
+                                        ) : isPlaying ? (
+                                          <Pause className="w-5 h-5 text-cyan-400" />
+                                        ) : (
+                                          <Play className="w-5 h-5 text-white fill-white ml-0.5" />
+                                        )
+                                      ) : (
+                                        <Play className="w-5 h-5 text-white fill-white ml-0.5" />
+                                      )}
+                                    </div>
+                                    {currentSong?.id === song.id && (isPlaying || isBuffering) && (
+                                      <div className={`absolute bottom-0 inset-x-0 h-1 bg-cyan-400 ${isBuffering ? "animate-pulse" : ""}`}></div>
+                                    )}
+                                  </div>
+
+                                  <div className="min-w-0">
+                                    <div className="flex items-center space-x-1.5">
+                                      <h4 className="text-xs md:text-sm font-bold text-slate-100 truncate group-hover:text-cyan-300 transition-colors">
+                                        {song.title}
+                                      </h4>
+                                      <LyricBadge song={song} size="sm" />
+                                    </div>
+                                    <p className="text-[11px] text-slate-400 truncate mt-0.5">{song.artist}</p>
+                                    <span className="text-[9px] font-mono text-slate-500 mt-0.5 block">{formatTime(song.duration)}</span>
+                                  </div>
+                                </button>
+
+                                <div className="flex items-center space-x-1 ml-2 flex-shrink-0 relative">
+                                  <button 
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleDownloadSong(song);
+                                    }}
+                                    className={`p-1.5 md:p-2 rounded-xl border transition-all active:scale-95 ${
+                                      isGoldActive 
+                                        ? "bg-amber-500/10 hover:bg-amber-500/20 border-amber-500/20 text-amber-400 hover:text-amber-300"
+                                        : "bg-white/5 hover:bg-white/10 border-white/10 text-slate-400 hover:text-slate-300"
+                                    }`}
+                                    title={isGoldActive ? "Download Lossless MP3 Offline" : "VIP Gold Download Option"}
+                                  >
+                                    <Download className="w-3.5 h-3.5" />
+                                  </button>
+
+                                  <div className="relative">
+                                    <button 
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setPlaylistDropdownOpen(playlistDropdownOpen === song.id ? null : song.id);
+                                      }}
+                                      className="p-1.5 md:p-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-slate-400 hover:text-cyan-400 transition-all active:scale-95"
+                                      title="Add to Playlist"
+                                    >
+                                      <Plus className="w-3.5 h-3.5" />
+                                    </button>
+
+                                    {/* Quick Add to Playlist Dropdown */}
+                                    {playlistDropdownOpen === song.id && (
+                                      <div className="absolute right-0 mt-2 w-48 bg-[#0b0d19] border border-white/10 rounded-2xl p-2 shadow-2xl z-20 backdrop-blur-xl animate-fade-in">
+                                        <p className="text-[10px] font-semibold text-slate-500 px-3 py-1.5 uppercase tracking-wider border-b border-white/5">Add to Playlist</p>
+                                        {playlists.length === 0 ? (
+                                          <button 
+                                            onClick={() => { setActiveTab("playlist"); setPlaylistDropdownOpen(null); }}
+                                            className="w-full text-left text-xs text-cyan-400 hover:bg-white/5 px-3 py-2 rounded-xl mt-1 font-medium"
+                                          >
+                                            + Create a Playlist
+                                          </button>
+                                        ) : (
+                                          <div className="max-h-36 overflow-y-auto mt-1 custom-scrollbar">
+                                            {playlists.map((pl) => (
+                                              <button
+                                                key={pl.id}
+                                                onClick={() => addSongToPlaylist(song.id, pl)}
+                                                className="w-full text-left text-xs text-slate-300 hover:text-white hover:bg-white/5 px-3 py-2 rounded-xl truncate block"
+                                              >
+                                                {pl.name}
+                                              </button>
+                                            ))}
+                                          </div>
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      );
+                    })()}
+                  </div>
+                </div>
+              ) : (
+                /* NORMAL DISCOVER VIEW */
+                <>
+                  {/* Clean Featured Artists Row - Directly on page (No card box wrapper!) */}
+                  {artistSummaries.length > 0 && (
+                    <div className="space-y-3 py-1">
+                      <div className="flex items-center justify-between px-1">
+                        <div className="flex items-center space-x-2">
+                          <h2 className="text-base font-bold text-white tracking-tight flex items-center gap-2">
+                            <span>Featured Artists</span>
+                            <span className="text-[10px] font-mono text-cyan-400 bg-cyan-500/10 border border-cyan-500/20 px-2 py-0.5 rounded-full font-bold">
+                              {artistSummaries.length}
+                            </span>
+                          </h2>
+                        </div>
+
+                        <div className="flex items-center space-x-1.5">
+                          <button
+                            onClick={() => scrollArtists("left")}
+                            className="p-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 hover:text-white transition-all active:scale-95 cursor-pointer"
+                            title="Scroll Left"
+                          >
+                            <ChevronLeft className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={() => scrollArtists("right")}
+                            className="p-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 hover:text-white transition-all active:scale-95 cursor-pointer"
+                            title="Scroll Right"
+                          >
+                            <ChevronRight className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Horizontal Scrolling Artist Avatars Carousel */}
+                      <div
+                        ref={artistsScrollRef}
+                        className="flex items-center space-x-4 md:space-x-6 overflow-x-auto scrollbar-none py-2 px-1 snap-x scroll-smooth"
+                        style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}
                       >
-                        {/* Artwork backdrop glow */}
-                        <div className="absolute top-0 right-0 w-20 h-20 bg-cyan-500/10 rounded-full blur-xl group-hover:opacity-100 transition-all"></div>
-                        
-                        <div className="flex items-start justify-between relative z-10">
-                          <div className="relative w-11 h-11 md:w-14 md:h-14 rounded-xl overflow-hidden bg-black/40 border border-white/10 flex-shrink-0">
-                            <img 
-                              src={song.imageUrl} 
-                              alt={song.title} 
-                              className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" 
-                              referrerPolicy="no-referrer"
-                            />
-                            <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
-                              <Play className="w-4 h-4 text-white fill-white ml-0.5" />
+                        {artistSummaries.map((artist) => (
+                          <div
+                            key={`artist-circle-${artist.id || artist.name}`}
+                            onClick={() => setActiveArtistProfile(artist)}
+                            className="group flex-shrink-0 flex flex-col items-center cursor-pointer transition-all duration-200 snap-start select-none w-20 md:w-24 text-center"
+                          >
+                            {/* Circular glowing avatar */}
+                            <div className="relative w-16 h-16 md:w-20 md:h-20 rounded-full p-0.5 border-2 border-slate-700/80 group-hover:border-cyan-400 shadow-md group-hover:shadow-[0_0_15px_rgba(0,242,254,0.4)] transition-all duration-300 mb-2 overflow-hidden bg-slate-950">
+                              <img
+                                src={artist.imageUrl || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(artist.name)}&backgroundColor=05070c,00f2fe`}
+                                alt={artist.name}
+                                className="w-full h-full object-cover rounded-full group-hover:scale-110 transition-transform duration-300"
+                                referrerPolicy="no-referrer"
+                              />
+                            </div>
+
+                            <span className="text-xs font-semibold text-slate-200 group-hover:text-cyan-300 transition-colors truncate w-full">
+                              {artist.name}
+                            </span>
+                            <span className="text-[10px] font-mono text-slate-500 mt-0.5">
+                              {artist.count} {artist.count === 1 ? "track" : "tracks"}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+              <div className="space-y-6">
+                {/* New Releases Section */}
+                <div className="space-y-4">
+                  <div className="flex justify-between items-center px-1">
+                    <div>
+                      <h2 className="text-base font-extrabold text-white flex items-center space-x-2">
+                        <Music className="w-4 h-4 text-cyan-400" />
+                        <span>New Songs</span>
+                      </h2>
+                      <p className="text-[11px] text-slate-400 font-sans">The latest additions to our music library</p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-6 gap-3.5 md:gap-4">
+                    {loadingSongs ? (
+                      [...Array(4)].map((_, i) => (
+                        <div key={i} className="animate-pulse bg-white/5 border border-white/5 rounded-2xl p-3.5 h-32 md:h-36 flex flex-col justify-between">
+                          <div className="flex justify-between items-start">
+                            <div className="relative w-11 h-11 md:w-14 md:h-14 rounded-xl bg-gradient-to-tr from-cyan-500/10 via-indigo-500/10 to-fuchsia-500/10 border border-white/5 flex items-center justify-center">
+                              <span className="text-[10px] font-black text-cyan-400/50">ZYNC</span>
+                            </div>
+                            <div className="h-4 w-12 rounded bg-white/5"></div>
+                          </div>
+                          <div className="space-y-1.5 mt-3">
+                            <div className="h-3 w-3/4 rounded bg-white/10"></div>
+                            <div className="h-2.5 w-1/2 rounded bg-white/5"></div>
+                            <div className="h-2 w-8 rounded bg-white/5"></div>
+                          </div>
+                        </div>
+                      ))
+                    ) : songs.length === 0 ? (
+                      <div className="col-span-2 lg:col-span-4 p-8 text-center border border-dashed border-white/10 rounded-2xl text-xs text-slate-500 bg-white/5">
+                        No cloud tracks found. Load local files or publish some cloud tracks.
+                      </div>
+                    ) : (
+                      songs.slice(0, 6).map((song, idx) => (
+                        <div 
+                          key={`new-release-${song.id}`}
+                          className="group relative overflow-hidden transition-all duration-200 p-3.5 flex flex-col justify-between rounded-2xl bg-[#0d131f] hover:bg-[#121929] border border-white/[0.08] hover:border-cyan-500/30 shadow-sm cursor-pointer hover:-translate-y-0.5"
+                          onClick={() => playSong(songs.indexOf(song), songs)}
+                        >
+                          <div className="flex items-start justify-between relative z-10">
+                            <div className="relative w-12 h-12 md:w-14 md:h-14 rounded-xl overflow-hidden bg-black/40 border border-white/10 flex-shrink-0">
+                              <img 
+                                src={song.imageUrl} 
+                                alt={song.title} 
+                                className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" 
+                                referrerPolicy="no-referrer"
+                              />
+                              <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
+                                <Play className="w-4 h-4 text-white fill-white ml-0.5" />
+                              </div>
+                            </div>
+
+                            <span className="text-[8px] font-mono font-black text-cyan-400 bg-cyan-500/10 border border-cyan-500/25 px-2 py-0.5 rounded-md uppercase tracking-wider">
+                              New
+                            </span>
+                          </div>
+
+                          <div className="min-w-0 mt-2.5 relative z-10">
+                            <div className="flex items-center space-x-1.5">
+                              <h4 className="text-xs md:text-sm font-bold text-slate-100 group-hover:text-cyan-400 transition-colors truncate">
+                                {song.title}
+                              </h4>
+                              <LyricBadge song={song} size="sm" />
+                            </div>
+                            <p className="text-[11px] text-slate-400 truncate mt-0.5">{song.artist}</p>
+                            <div className="flex items-center justify-between mt-1">
+                              <span className="text-[9px] font-mono text-slate-500">{formatTime(song.duration)}</span>
                             </div>
                           </div>
-
-                          {/* New Badge */}
-                          <span className={`text-[8px] font-mono font-black ${currentThemeActive.text} ${currentThemeActive.bgLight} border ${currentThemeActive.border} px-2 py-0.5 rounded-md uppercase tracking-wider`}>
-                            New Song
-                          </span>
                         </div>
-
-                        <div className="min-w-0 mt-3 relative z-10">
-                          <div className="flex items-center space-x-1.5">
-                            <h4 className="text-xs md:text-sm font-bold text-slate-200 group-hover:text-cyan-400 transition-colors truncate">
-                              {song.title}
-                            </h4>
-                            <LyricBadge song={song} size="sm" />
-                          </div>
-                          <p className="text-[10px] text-slate-400 truncate mt-0.5">{song.artist}</p>
-                          <div className="flex items-center justify-between mt-1.5">
-                            <span className="text-[9px] font-mono text-slate-500">{formatTime(song.duration)}</span>
-                          </div>
-                        </div>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </div>
-
-              {/* Main Content Area: Music Grid */}
-              <div className="space-y-4">
-                <div className="flex justify-between items-center px-1">
-                  <div>
-                    <h2 className="text-lg font-bold text-white flex items-center space-x-2">
-                      <Disc className="w-5 h-5 text-cyan-400 animate-spin-slow" />
-                      <span>Cloud Track Library</span>
-                    </h2>
-                    <p className="text-xs text-slate-400">All uploaded tracks synced in real-time</p>
+                      ))
+                    )}
                   </div>
                 </div>
 
-                 {loadingSongs ? (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                {/* Main Content Area: Music Grid */}
+                <div className="space-y-4">
+                  <div className="flex justify-between items-center px-1">
+                    <div>
+                      <h2 className="text-lg font-bold text-white flex items-center space-x-2">
+                        <Disc className="w-5 h-5 text-cyan-400 animate-spin-slow" />
+                        <span>{selectedArtist ? `${selectedArtist}'s Tracks` : "Cloud Track Library"}</span>
+                      </h2>
+                      <p className="text-xs text-slate-400">
+                        {selectedArtist ? `Showing all tracks by ${selectedArtist}` : "All uploaded tracks synced in real-time"}
+                      </p>
+                    </div>
+                  </div>
+
+                  {loadingSongs ? (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-5 gap-3.5 md:gap-4">
                       {[...Array(6)].map((_, i) => (
                         <div 
                           key={`skeleton-cloud-song-${i}`}
@@ -2383,159 +2665,165 @@ export default function App() {
                         >
                           <div className="flex items-center space-x-3.5 min-w-0 flex-1">
                             <div className="relative w-14 h-14 rounded-xl overflow-hidden bg-gradient-to-tr from-cyan-500/10 via-indigo-500/10 to-fuchsia-500/10 border border-white/5 flex-shrink-0 flex items-center justify-center shadow-md">
-                              <span className="text-xs font-black text-cyan-400/50">SK</span>
+                              <span className="text-xs font-black text-cyan-400/50">ZYNC</span>
                             </div>
                             <div className="flex-1 space-y-2 min-w-0">
                               <div className="h-3 bg-white/10 rounded w-2/3"></div>
                               <div className="h-2.5 bg-white/5 rounded w-1/2"></div>
-                              <div className="flex space-x-1">
-                                <div className="h-2 bg-white/5 rounded w-8"></div>
-                                <div className="h-2 bg-white/5 rounded w-12"></div>
-                              </div>
                             </div>
                           </div>
                         </div>
                       ))}
                     </div>
-                  ) : songs.length === 0 ? (
-                  <div className="p-8 border border-dashed border-white/10 rounded-3xl bg-white/5 text-center">
-                    <Info className="w-10 h-10 text-slate-500 mx-auto mb-3" />
-                    <h3 className="text-sm font-bold text-slate-300">Your cloud song library is empty</h3>
-                    <p className="text-xs text-slate-400 max-w-sm mx-auto mt-1 mb-4">
-                      No cloud tracks have been published yet. You can play your local offline songs instantly by selecting them from your device.
-                    </p>
-                    <button 
-                      onClick={() => setActiveTab("local")}
-                      className="inline-flex items-center space-x-2 px-5 py-2.5 rounded-2xl bg-cyan-500 text-black font-bold text-xs hover:scale-105 active:scale-95 transition-all"
-                    >
-                      <FolderOpen className="w-4 h-4" />
-                      <span>Open Local File Player</span>
-                    </button>
-                  </div>
-                ) : (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                    {songs.map((song, idx) => (
-                      <div 
-                        key={song.id}
-                        className="group flex items-center justify-between p-3.5 bg-white/5 hover:bg-white/10 border border-white/5 rounded-2xl transition-all duration-300 relative"
-                      >
+                  ) : displayedSongs.length === 0 ? (
+                    <div className="p-8 border border-dashed border-white/10 rounded-3xl bg-white/5 text-center">
+                      <Info className="w-10 h-10 text-slate-500 mx-auto mb-3" />
+                      <h3 className="text-sm font-bold text-slate-300">
+                        {selectedArtist ? `No songs found for ${selectedArtist}` : "Your cloud song library is empty"}
+                      </h3>
+                      <p className="text-xs text-slate-400 max-w-sm mx-auto mt-1 mb-4">
+                        {selectedArtist ? "Clear the artist filter to view all library tracks." : "No cloud tracks have been published yet. You can play your local offline songs instantly."}
+                      </p>
+                      {selectedArtist ? (
                         <button 
-                          type="button"
-                          onClick={() => playSong(idx, songs)}
-                          className="flex items-center space-x-3.5 min-w-0 flex-1 cursor-pointer text-left focus:outline-none"
+                          onClick={() => setSelectedArtist(null)}
+                          className="inline-flex items-center space-x-2 px-5 py-2.5 rounded-2xl bg-cyan-500 text-black font-bold text-xs hover:scale-105 active:scale-95 transition-all"
                         >
-                          {/* Image Hover Play state overlay */}
-                          <div className="relative w-14 h-14 rounded-xl overflow-hidden bg-black/40 border border-white/10 flex-shrink-0 shadow-md">
-                            <img 
-                              src={song.imageUrl} 
-                              alt={song.title} 
-                              className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" 
-                              referrerPolicy="no-referrer"
-                            />
-                            <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
-                              {currentSong?.id === song.id ? (
-                                isBuffering ? (
-                                  <Loader2 className="w-5 h-5 text-cyan-400 animate-spin" />
-                                ) : isPlaying ? (
-                                  <Pause className="w-5 h-5 text-cyan-400" />
-                                ) : (
-                                  <Play className="w-5 h-5 text-white fill-white ml-0.5" />
-                                )
-                              ) : (
-                                <Play className="w-5 h-5 text-white fill-white ml-0.5" />
-                              )}
-                            </div>
-                            {currentSong?.id === song.id && (isPlaying || isBuffering) && (
-                              <div className={`absolute bottom-0 inset-x-0 h-1 bg-cyan-400 ${isBuffering ? "animate-pulse" : ""}`}></div>
-                            )}
-                          </div>
-
-                          <div className="min-w-0">
-                            <div className="flex items-center space-x-1.5">
-                              <h4 className="text-sm font-bold text-slate-100 truncate group-hover:text-cyan-400 transition-colors">
-                                {song.title}
-                              </h4>
-                              <LyricBadge song={song} size="sm" />
-                            </div>
-                            <p className="text-xs text-slate-400 truncate mt-0.5">{song.artist}</p>
-                            <div className="flex flex-wrap items-center gap-1.5 mt-1">
-                              <span className="text-[9px] font-mono text-slate-500">{formatTime(song.duration)}</span>
-                              {song.categories && song.categories.map((cat) => (
-                                <span key={cat} className="text-[8px] font-mono px-1.5 py-0.5 bg-cyan-500/10 border border-cyan-500/25 text-cyan-400 rounded-full">
-                                  {cat}
-                                </span>
-                              ))}
-                            </div>
-                          </div>
+                          <span>Show All Library Tracks</span>
                         </button>
-
-                        {/* Interactive Add to Playlist Trigger and Premium Download */}
-                        <div className="flex items-center space-x-1.5 ml-2 flex-shrink-0 relative">
-                          <button 
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleDownloadSong(song);
-                            }}
-                            className={`p-2 rounded-xl border transition-all active:scale-95 ${
-                              isGoldActive 
-                                ? "bg-amber-500/10 hover:bg-amber-500/20 border-amber-500/20 text-amber-400 hover:text-amber-300"
-                                : "bg-white/5 hover:bg-white/10 border-white/10 text-slate-400 hover:text-slate-300"
-                            }`}
-                            title={isGoldActive ? "Download HQ MP3 Offline" : "VIP Gold Download Option"}
+                      ) : (
+                        <button 
+                          onClick={() => setActiveTab("local")}
+                          className="inline-flex items-center space-x-2 px-5 py-2.5 rounded-2xl bg-cyan-500 text-black font-bold text-xs hover:scale-105 active:scale-95 transition-all"
+                        >
+                          <FolderOpen className="w-4 h-4" />
+                          <span>Open Local File Player</span>
+                        </button>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-5 gap-3.5 md:gap-4">
+                      {displayedSongs.map((song) => {
+                        const songIdx = songs.findIndex(s => s.id === song.id);
+                        return (
+                          <div 
+                            key={song.id}
+                            className="group flex items-center justify-between p-3 bg-[#0d131f] hover:bg-[#121929] border border-white/[0.08] hover:border-cyan-500/30 rounded-2xl transition-all duration-200 relative shadow-sm"
                           >
-                            <Download className="w-3.5 h-3.5" />
-                          </button>
-
-                          <div className="relative">
                             <button 
                               type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setPlaylistDropdownOpen(playlistDropdownOpen === song.id ? null : song.id);
-                              }}
-                              className="p-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-slate-400 hover:text-cyan-400 transition-all active:scale-95"
+                              onClick={() => playSong(songIdx !== -1 ? songIdx : 0, songs)}
+                              className="flex items-center space-x-3 min-w-0 flex-1 cursor-pointer text-left focus:outline-none"
                             >
-                              <Plus className="w-3.5 h-3.5" />
+                              {/* Image Hover Play state overlay */}
+                              <div className="relative w-12 h-12 md:w-14 md:h-14 rounded-xl overflow-hidden bg-black/40 border border-white/10 flex-shrink-0 shadow-md">
+                                <img 
+                                  src={song.imageUrl} 
+                                  alt={song.title} 
+                                  className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" 
+                                  referrerPolicy="no-referrer"
+                                />
+                                <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
+                                  {currentSong?.id === song.id ? (
+                                    isBuffering ? (
+                                      <Loader2 className="w-5 h-5 text-cyan-400 animate-spin" />
+                                    ) : isPlaying ? (
+                                      <Pause className="w-5 h-5 text-cyan-400" />
+                                    ) : (
+                                      <Play className="w-5 h-5 text-white fill-white ml-0.5" />
+                                    )
+                                  ) : (
+                                    <Play className="w-5 h-5 text-white fill-white ml-0.5" />
+                                  )}
+                                </div>
+                                {currentSong?.id === song.id && (isPlaying || isBuffering) && (
+                                  <div className={`absolute bottom-0 inset-x-0 h-1 bg-cyan-400 ${isBuffering ? "animate-pulse" : ""}`}></div>
+                                )}
+                              </div>
+
+                              {/* Song Details: Only Song Title and Artist Name */}
+                              <div className="min-w-0">
+                                <div className="flex items-center space-x-1.5">
+                                  <h4 className="text-xs md:text-sm font-bold text-slate-100 truncate group-hover:text-cyan-300 transition-colors">
+                                    {song.title}
+                                  </h4>
+                                  <LyricBadge song={song} size="sm" />
+                                </div>
+                                <p className="text-[11px] text-slate-400 truncate mt-0.5">{song.artist}</p>
+                                <span className="text-[9px] font-mono text-slate-500 mt-0.5 block">{formatTime(song.duration)}</span>
+                              </div>
                             </button>
 
-                            {/* Quick Add to Playlist Dropdown */}
-                            {playlistDropdownOpen === song.id && (
-                              <div className="absolute right-0 mt-2 w-48 bg-[#0b0d19] border border-white/10 rounded-2xl p-2 shadow-2xl z-20 backdrop-blur-xl animate-fade-in">
-                                <p className="text-[10px] font-semibold text-slate-500 px-3 py-1.5 uppercase tracking-wider border-b border-white/5">Add to Playlist</p>
-                                {playlists.length === 0 ? (
-                                  <button 
-                                    onClick={() => { setActiveTab("playlist"); setPlaylistDropdownOpen(null); }}
-                                    className="w-full text-left text-xs text-cyan-400 hover:bg-white/5 px-3 py-2 rounded-xl mt-1 font-medium"
-                                  >
-                                    + Create a Playlist
-                                  </button>
-                                ) : (
-                                  <div className="max-h-36 overflow-y-auto mt-1 custom-scrollbar">
-                                    {playlists.map((pl) => (
-                                      <button
-                                        key={pl.id}
-                                        onClick={() => addSongToPlaylist(song.id, pl)}
-                                        className="w-full text-left text-xs text-slate-300 hover:text-white hover:bg-white/5 px-3 py-2 rounded-xl truncate block"
+                            {/* Interactive Add to Playlist Trigger and Premium Download */}
+                            <div className="flex items-center space-x-1 ml-2 flex-shrink-0 relative">
+                              <button 
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleDownloadSong(song);
+                                }}
+                                className={`p-1.5 md:p-2 rounded-xl border transition-all active:scale-95 ${
+                                  isGoldActive 
+                                    ? "bg-amber-500/10 hover:bg-amber-500/20 border-amber-500/20 text-amber-400 hover:text-amber-300"
+                                    : "bg-white/5 hover:bg-white/10 border-white/10 text-slate-400 hover:text-slate-300"
+                                }`}
+                                title={isGoldActive ? "Download Lossless MP3 Offline" : "VIP Gold Download Option"}
+                              >
+                                <Download className="w-3.5 h-3.5" />
+                              </button>
+
+                              <div className="relative">
+                                <button 
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setPlaylistDropdownOpen(playlistDropdownOpen === song.id ? null : song.id);
+                                  }}
+                                  className="p-1.5 md:p-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-slate-400 hover:text-cyan-400 transition-all active:scale-95"
+                                >
+                                  <Plus className="w-3.5 h-3.5" />
+                                </button>
+
+                                {/* Quick Add to Playlist Dropdown */}
+                                {playlistDropdownOpen === song.id && (
+                                  <div className="absolute right-0 mt-2 w-48 bg-[#0b0d19] border border-white/10 rounded-2xl p-2 shadow-2xl z-20 backdrop-blur-xl animate-fade-in">
+                                    <p className="text-[10px] font-semibold text-slate-500 px-3 py-1.5 uppercase tracking-wider border-b border-white/5">Add to Playlist</p>
+                                    {playlists.length === 0 ? (
+                                      <button 
+                                        onClick={() => { setActiveTab("playlist"); setPlaylistDropdownOpen(null); }}
+                                        className="w-full text-left text-xs text-cyan-400 hover:bg-white/5 px-3 py-2 rounded-xl mt-1 font-medium"
                                       >
-                                        {pl.name}
+                                        + Create a Playlist
                                       </button>
-                                    ))}
+                                    ) : (
+                                      <div className="max-h-36 overflow-y-auto mt-1 custom-scrollbar">
+                                        {playlists.map((pl) => (
+                                          <button
+                                            key={pl.id}
+                                            onClick={() => addSongToPlaylist(song.id, pl)}
+                                            className="w-full text-left text-xs text-slate-300 hover:text-white hover:bg-white/5 px-3 py-2 rounded-xl truncate block"
+                                          >
+                                            {pl.name}
+                                          </button>
+                                        ))}
+                                      </div>
+                                    )}
                                   </div>
                                 )}
                               </div>
-                            )}
-                          </div>
-                        </div>
+                            </div>
 
-                      </div>
-                    ))}
-                  </div>
-                )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
               </div>
-            </div>
-          </div>
-        )}
+            </>
+          )}
+        </div>
+      )}
 
           {/* 2. SEARCH BAR VIEW */}
           {activeTab === "search" && !selectedPlaylist && (
@@ -2584,7 +2872,7 @@ export default function App() {
                     >
                       <div className="flex items-center space-x-3.5 min-w-0 flex-1">
                         <div className="w-12 h-12 rounded-xl bg-gradient-to-tr from-cyan-500/10 via-indigo-500/10 to-fuchsia-500/10 border border-white/5 flex items-center justify-center flex-shrink-0">
-                          <span className="text-[10px] font-black text-cyan-400/50">SK</span>
+                          <span className="text-[10px] font-black text-cyan-400/50">ZYNC</span>
                         </div>
                         <div className="flex-1 space-y-2 min-w-0">
                           <div className="h-3.5 bg-white/10 rounded w-1/2"></div>
@@ -2596,7 +2884,7 @@ export default function App() {
                 ) : filteredSongs.length === 0 ? (
                   <div className="p-12 text-center text-slate-400 border border-dashed border-white/10 rounded-2xl">
                     <p className="text-sm">No songs match your query or category.</p>
-                    <p className="text-xs text-slate-500 mt-1">Try searching for keywords like "Single" or other artist tags.</p>
+                    <p className="text-xs text-slate-500 mt-1">Try searching for song titles or artist names.</p>
                   </div>
                 ) : (
                   filteredSongs.map((song) => {
@@ -2604,7 +2892,7 @@ export default function App() {
                     return (
                       <div 
                         key={song.id}
-                        className="group flex items-center justify-between p-3 bg-white/5 hover:bg-white/10 border border-white/5 rounded-2xl transition-all"
+                        className="group flex items-center justify-between p-3 bg-[#0d131f] hover:bg-[#121929] border border-white/[0.08] hover:border-cyan-500/30 rounded-2xl transition-all duration-200 relative shadow-sm"
                       >
                         <button 
                           type="button"
@@ -2614,22 +2902,15 @@ export default function App() {
                           <img 
                             src={song.imageUrl} 
                             alt={song.title} 
-                            className="w-12 h-12 rounded-xl object-cover border border-white/10" 
+                            className="w-12 h-12 rounded-xl object-cover border border-white/10 flex-shrink-0" 
                             referrerPolicy="no-referrer"
                           />
                           <div className="min-w-0">
                             <div className="flex items-center space-x-1.5">
-                              <h4 className="text-sm font-bold text-slate-200 group-hover:text-cyan-400 truncate">{song.title}</h4>
+                              <h4 className="text-sm font-bold text-slate-100 group-hover:text-cyan-400 truncate">{song.title}</h4>
                               <LyricBadge song={song} size="sm" />
                             </div>
                             <p className="text-xs text-slate-400 truncate mt-0.5">{song.artist}</p>
-                            <div className="flex flex-wrap items-center gap-1 mt-1">
-                              {song.categories && song.categories.map((cat) => (
-                                <span key={cat} className="text-[8px] font-mono px-1.5 py-0.5 bg-cyan-500/10 border border-cyan-500/25 text-cyan-400 rounded-full">
-                                  {cat}
-                                </span>
-                              ))}
-                            </div>
                           </div>
                         </button>
 
@@ -2642,7 +2923,7 @@ export default function App() {
                               e.stopPropagation();
                               setPlaylistDropdownOpen(playlistDropdownOpen === song.id ? null : song.id);
                             }}
-                            className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-slate-400 hover:text-cyan-400 transition-all"
+                            className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-slate-400 hover:text-cyan-400 transition-all cursor-pointer"
                           >
                             <Plus className="w-4 h-4" />
                           </button>
@@ -2818,7 +3099,7 @@ export default function App() {
                   {playlists.map((pl) => (
                     <div 
                       key={pl.id}
-                      className="group bg-[#090b16]/70 hover:bg-[#0f1224]/80 border border-white/5 rounded-3xl p-3.5 transition-all duration-300 flex flex-col justify-between hover:scale-[1.02] shadow-xl hover:shadow-cyan-500/5 cursor-pointer"
+                      className="group bg-[#0d131f] hover:bg-[#121929] border border-white/[0.08] hover:border-cyan-500/30 rounded-2xl p-4 transition-all duration-200 flex flex-col justify-between hover:-translate-y-0.5 shadow-sm hover:shadow-md cursor-pointer"
                       onClick={() => setSelectedPlaylist(pl)}
                     >
                       <div>
@@ -3043,7 +3324,7 @@ export default function App() {
                   songs.filter(s => selectedPlaylist.songIds.includes(s.id)).map((song, pIdx, filteredArr) => (
                     <div 
                       key={song.id}
-                      className="group flex items-center justify-between p-3 bg-white/5 hover:bg-white/10 border border-white/5 rounded-2xl transition-all"
+                      className="group flex items-center justify-between p-3 bg-[#0d131f] hover:bg-[#121929] border border-white/[0.08] hover:border-cyan-500/30 rounded-2xl transition-all duration-200 relative shadow-sm"
                     >
                       <button 
                         type="button"
@@ -3202,7 +3483,7 @@ export default function App() {
                       .map((song, lIdx, filteredArr) => (
                         <div 
                           key={song.id}
-                          className="group flex items-center justify-between p-3 bg-white/5 hover:bg-white/10 border border-white/5 rounded-2xl transition-all"
+                          className="group flex items-center justify-between p-3 bg-[#0d131f] hover:bg-[#121929] border border-white/[0.08] hover:border-cyan-500/30 rounded-2xl transition-all duration-200 relative shadow-sm"
                         >
                           <button 
                             type="button"
@@ -3283,42 +3564,42 @@ export default function App() {
                             <UserCheck className="w-3 h-3" />
                             <span>LOGGED IN</span>
                           </div>
-                          <h2 className="text-2xl font-bold text-white truncate tracking-tight">{userProfile?.displayName || "skplayer Listener"}</h2>
+                          <h2 className="text-2xl font-bold text-white truncate tracking-tight">{userProfile?.displayName || "ZYNC Listener"}</h2>
                           <p className="text-xs text-slate-400 truncate">{userProfile?.email}</p>
-                          <p className="text-[10px] text-slate-500 font-mono">USER UID: {user.uid.slice(0, 8)}...</p>
+                          <p className="text-[10px] text-slate-500 font-mono">ZYNC UID: {user.uid.slice(0, 8)}...</p>
                         </div>
 
                         {/* Sign out */}
                         <button
                           onClick={() => signOut(auth)}
-                          className="px-5 py-2.5 rounded-2xl bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-400 hover:text-red-300 font-bold text-xs transition-all flex items-center space-x-2"
+                          className="px-5 py-2.5 rounded-2xl bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-400 hover:text-red-300 font-bold text-xs transition-all flex items-center space-x-2 cursor-pointer"
                         >
                           <LogOut className="w-4 h-4" />
                           <span>Log Out</span>
                         </button>
                       </div>
 
-                      {/* VIP Membership Panel */}
+                      {/* VIP Membership & Active Subscription Panel with Direct Firebase Sync */}
                       <div className="glass-card rounded-3xl p-6 bg-gradient-to-br from-amber-500/10 via-yellow-600/5 to-transparent border border-amber-500/20 relative overflow-hidden">
                         <div className="absolute -top-12 -right-12 w-32 h-32 bg-amber-500/10 rounded-full blur-2xl pointer-events-none"></div>
                         
-                        <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 relative z-10">
+                        <div className="flex flex-col md:flex-row md:items-start justify-between gap-6 relative z-10">
                           <div className="space-y-2">
                             <div className="flex items-center space-x-2">
                               <Crown className="w-5 h-5 text-amber-400 animate-pulse fill-amber-400/20" />
-                              <h3 className="text-lg font-bold text-amber-400 tracking-tight">VIP GOLD Membership</h3>
+                              <h3 className="text-lg font-bold text-amber-400 tracking-tight">ZYNC VIP Membership</h3>
                             </div>
                             <p className="text-xs text-slate-300 max-w-xl leading-relaxed">
-                              Elevate your skplayer experience. Activates custom golden layout accents, full-screen enhancements, and unlocks the high-fidelity deep-sub-bass <span className="text-amber-300 font-semibold">"Bass Gold"</span> equalizer preset.
+                              Elevate your ZYNC experience. Activates custom golden layout accents, full-screen enhancements, direct Firebase cloud sync, and unlocks 320kbps Lossless Master Audio and <span className="text-amber-300 font-semibold">"Bass Gold"</span> acoustic preset.
                             </p>
                           </div>
 
                           {isGoldActive ? (
-                            <div className="flex flex-col items-start md:items-end space-y-1.5 p-4 rounded-2xl bg-amber-500/10 border border-amber-500/20 min-w-[220px]">
+                            <div className="flex flex-col items-start md:items-end space-y-2 p-4 rounded-2xl bg-amber-500/10 border border-amber-500/20 min-w-[240px]">
                               <div className="flex items-center space-x-2">
                                 <span className="text-[10px] font-bold text-amber-400 font-mono flex items-center space-x-1 uppercase">
                                   <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping mr-1"></span>
-                                  VIP ACTIVE
+                                  ACTIVE IN FIREBASE
                                 </span>
                                 {userProfile?.plan === 199 ? (
                                   <span className="px-2 py-0.5 rounded-full bg-gradient-to-r from-purple-500 to-amber-500 text-black text-[9px] font-black font-mono shadow-sm">
@@ -3331,21 +3612,54 @@ export default function App() {
                                 )}
                               </div>
                               <span className="text-xs font-mono text-amber-200/90 font-bold">
-                                {userProfile?.planName || (userProfile?.plan === 199 ? "₹199 VIP Master Pass (30 Days)" : "₹99 VIP Gold Pass (30 Days)")}
+                                {userProfile?.planName || (userProfile?.plan === 199 ? "₹199 ZYNC VIP Master Pass" : "₹99 ZYNC VIP Gold Pass")}
                               </span>
                               <span className="text-[10px] text-slate-400 font-mono">
                                 Expires: {userProfile?.proExpiresAt ? new Date(userProfile.proExpiresAt).toLocaleDateString() : "Active"}
                               </span>
+                              <span className="text-[9px] text-emerald-400 font-mono flex items-center gap-1">
+                                <Check className="w-3 h-3" />
+                                <span>Direct Firestore Synced</span>
+                              </span>
                             </div>
                           ) : (
-                            <div className="flex flex-col space-y-2.5 w-full md:w-auto md:min-w-[320px]">
-                              <span className="text-[10px] font-mono font-bold text-amber-400/80">ACTIVATE WITH VIP KEY (Use: SARATHI-GOLD)</span>
+                            <div className="flex flex-col space-y-3 w-full md:w-auto md:min-w-[340px]">
+                              {/* 1-Click Direct Plan Subscription Buttons */}
+                              <div className="grid grid-cols-2 gap-2">
+                                <button
+                                  onClick={() => handleDirectSubscribe(99)}
+                                  disabled={proKeyLoading}
+                                  className="p-3 rounded-2xl bg-gradient-to-b from-amber-500/20 to-amber-900/30 border border-amber-500/40 hover:border-amber-400 text-left transition-all hover:scale-[1.02] active:scale-95 cursor-pointer disabled:opacity-50"
+                                >
+                                  <div className="flex items-center justify-between">
+                                    <span className="text-xs font-black text-amber-300">₹99 Pass</span>
+                                    <Crown className="w-3.5 h-3.5 text-amber-400" />
+                                  </div>
+                                  <span className="text-[10px] text-slate-300 block mt-1">30 Days VIP Gold</span>
+                                  <span className="text-[9px] text-amber-400/90 font-bold font-mono mt-1 block">Save to Firebase →</span>
+                                </button>
+
+                                <button
+                                  onClick={() => handleDirectSubscribe(199)}
+                                  disabled={proKeyLoading}
+                                  className="p-3 rounded-2xl bg-gradient-to-b from-purple-500/20 to-indigo-900/30 border border-purple-500/40 hover:border-purple-400 text-left transition-all hover:scale-[1.02] active:scale-95 cursor-pointer disabled:opacity-50"
+                                >
+                                  <div className="flex items-center justify-between">
+                                    <span className="text-xs font-black text-purple-300">₹199 Master</span>
+                                    <Crown className="w-3.5 h-3.5 text-purple-400" />
+                                  </div>
+                                  <span className="text-[10px] text-slate-300 block mt-1">60 Days VIP Master</span>
+                                  <span className="text-[9px] text-purple-300/90 font-bold font-mono mt-1 block">Save to Firebase →</span>
+                                </button>
+                              </div>
+
+                              <span className="text-[10px] font-mono font-bold text-amber-400/80">OR ACTIVATE WITH VIP KEY</span>
                               <div className="flex items-center space-x-2">
                                 <div className="relative flex-1">
                                   <Key className="w-3.5 h-3.5 text-slate-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
                                   <input 
-                                    type="text"
-                                    placeholder="Enter your key"
+                                    type="text" 
+                                    placeholder="Enter VIP key (e.g. SARATHI-GOLD)" 
                                     value={proKeyInput}
                                     onChange={(e) => setProKeyInput(e.target.value.toUpperCase())}
                                     className="w-full pl-9 pr-3 py-2 bg-black/40 border border-white/10 hover:border-amber-500/20 focus:border-amber-400/50 rounded-xl text-slate-200 outline-none text-xs font-mono tracking-wider transition-all"
@@ -3354,7 +3668,7 @@ export default function App() {
                                 <button
                                   onClick={handleActivateProKey}
                                   disabled={proKeyLoading || !proKeyInput.trim()}
-                                  className="px-4 py-2 rounded-xl bg-gradient-to-r from-amber-500 to-yellow-600 hover:from-amber-400 hover:to-yellow-500 text-black font-bold text-xs shadow-[0_4px_12px_rgba(245,158,11,0.2)] hover:scale-[1.02] active:scale-[0.98] transition-all disabled:opacity-40 flex-shrink-0"
+                                  className="px-4 py-2 rounded-xl bg-gradient-to-r from-amber-500 to-yellow-600 hover:from-amber-400 hover:to-yellow-500 text-black font-bold text-xs shadow-[0_4px_12px_rgba(245,158,11,0.2)] hover:scale-[1.02] active:scale-[0.98] transition-all disabled:opacity-40 flex-shrink-0 cursor-pointer"
                                 >
                                   {proKeyLoading ? "..." : "Activate"}
                                 </button>
@@ -3525,11 +3839,9 @@ export default function App() {
         </div>
       )}
 
-      {/* PERSISTENT PLAYBAR CONTROLLER (FLOATING PREMIUM GLASS COCKPIT) */}
+      {/* PERSISTENT PLAYBAR CONTROLLER */}
       {currentSong && (
-        <div className="fixed bottom-[84px] md:bottom-6 left-4 right-4 md:left-6 md:right-6 md:max-w-6xl md:mx-auto bg-black/60 backdrop-blur-2xl border border-white/12 py-3.5 px-4 md:px-8 z-30 select-none shadow-[0_24px_60px_rgba(0,0,0,0.85)] rounded-3xl transition-all duration-300 hover:border-cyan-500/20 overflow-hidden">
-          {/* Glass top reflection */}
-          <div className="absolute top-0 inset-x-0 h-[1px] bg-gradient-to-r from-transparent via-white/20 to-transparent rounded-t-3xl pointer-events-none"></div>
+        <div className="fixed bottom-[84px] md:bottom-6 left-3 right-3 md:left-6 md:right-6 md:max-w-6xl md:mx-auto bg-[#0d131f]/95 backdrop-blur-xl border border-white/[0.1] py-3 px-4 md:px-8 z-30 select-none shadow-[0_16px_40px_rgba(0,0,0,0.7)] rounded-2xl md:rounded-3xl transition-all duration-200 hover:border-cyan-500/30 overflow-hidden">
           <div className="max-w-7xl mx-auto flex items-center justify-between gap-4">
             
             {/* Song Cover Details - Trigger Immersive Full-Screen Player on click */}
@@ -3857,33 +4169,62 @@ export default function App() {
                 </p>
               </div>
 
-              {/* Action Button to activate or close */}
-              <div className="w-full pt-4 flex flex-col space-y-3.5">
+              {/* Action Buttons to activate directly or with key */}
+              <div className="w-full pt-3 flex flex-col space-y-3">
+                {/* 1-Click Direct Plan Subscription Buttons with instant Firestore save */}
+                <div className="grid grid-cols-2 gap-2.5">
+                  <button
+                    onClick={() => handleDirectSubscribe(99)}
+                    disabled={proKeyLoading}
+                    className="p-3 rounded-2xl bg-gradient-to-b from-amber-500/20 to-amber-950/40 border border-amber-500/40 hover:border-amber-400 text-left transition-all hover:scale-[1.02] active:scale-95 cursor-pointer disabled:opacity-50"
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-black text-amber-300">₹99 Gold</span>
+                      <Crown className="w-3.5 h-3.5 text-amber-400" />
+                    </div>
+                    <span className="text-[10px] text-slate-300 block mt-0.5">30 Days Pass</span>
+                    <span className="text-[9px] text-amber-400 font-bold font-mono mt-1 block">Save to Firebase →</span>
+                  </button>
+
+                  <button
+                    onClick={() => handleDirectSubscribe(199)}
+                    disabled={proKeyLoading}
+                    className="p-3 rounded-2xl bg-gradient-to-b from-purple-500/20 to-indigo-950/40 border border-purple-500/40 hover:border-purple-400 text-left transition-all hover:scale-[1.02] active:scale-95 cursor-pointer disabled:opacity-50"
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-black text-purple-300">₹199 Master</span>
+                      <Crown className="w-3.5 h-3.5 text-purple-400" />
+                    </div>
+                    <span className="text-[10px] text-slate-300 block mt-0.5">60 Days Pass</span>
+                    <span className="text-[9px] text-purple-300 font-bold font-mono mt-1 block">Save to Firebase →</span>
+                  </button>
+                </div>
+
                 <button
                   onClick={() => {
                     setIsUpgradePopupOpen(false);
                     setActiveTab("account");
-                    setSettingsSubTab("theme"); // Go to account settings
+                    setSettingsSubTab("theme");
                   }}
-                  className="w-full py-3 rounded-2xl bg-gradient-to-r from-amber-500 to-yellow-500 hover:from-amber-400 hover:to-yellow-400 text-black font-black text-xs transition-all tracking-wider uppercase shadow-[0_0_20px_rgba(245,158,11,0.35)] active:scale-95"
+                  className="w-full py-2.5 rounded-2xl bg-white/5 hover:bg-white/10 border border-white/10 text-slate-200 font-bold text-xs transition-all tracking-wider uppercase active:scale-95 cursor-pointer"
                 >
-                  Activate VIP Key
+                  Enter VIP Key / More Options
                 </button>
 
-                <div className="flex items-center justify-between gap-4 pt-2">
+                <div className="flex items-center justify-between gap-4 pt-1">
                   <button
                     onClick={() => {
                       localStorage.setItem("skplayer_hide_upgrade_popup", "true");
                       setIsUpgradePopupOpen(false);
                     }}
-                    className="text-[10px] text-slate-400 hover:text-slate-200 transition-colors underline font-medium"
+                    className="text-[10px] text-slate-400 hover:text-slate-200 transition-colors underline font-medium cursor-pointer"
                   >
                     Don't show me this again
                   </button>
 
                   <button
                     onClick={() => setIsUpgradePopupOpen(false)}
-                    className="text-[10px] text-slate-400 hover:text-white font-bold transition-all px-3 py-1.5 rounded-lg hover:bg-white/5 border border-transparent hover:border-white/10"
+                    className="text-[10px] text-slate-400 hover:text-white font-bold transition-all px-3 py-1.5 rounded-lg hover:bg-white/5 border border-transparent hover:border-white/10 cursor-pointer"
                   >
                     Close
                   </button>
@@ -3907,8 +4248,8 @@ export default function App() {
                   <Sliders className="w-5 h-5 animate-pulse" />
                 </div>
                 <div>
-                  <h3 className="text-base md:text-lg font-black text-white tracking-tight">skplayer Control Center</h3>
-                  <p className="text-[10px] md:text-xs text-slate-400">Manage theme preferences, acoustics, and PWA setup.</p>
+                  <h3 className="text-base md:text-lg font-black text-white tracking-tight">ZYNC Control Center</h3>
+                  <p className="text-[10px] md:text-xs text-slate-400">Manage audio acoustics, equalizers, offline storage, and PWA setup.</p>
                 </div>
               </div>
               <button
@@ -3921,185 +4262,7 @@ export default function App() {
 
             {/* Scrollable Categories Accordion */}
             <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-4 max-h-[60vh] scrollbar-thin">
-              
-              {/* Category 1: Themes & Styling */}
-              <div className="border border-white/10 rounded-2xl overflow-hidden bg-white/5 transition-all">
-                <button
-                  onClick={() => setExpandedSettingCategory(expandedSettingCategory === "theme" ? null : "theme")}
-                  className="w-full p-4 flex items-center justify-between text-left hover:bg-white/5 transition-colors focus:outline-none"
-                >
-                  <div className="flex items-center space-x-3">
-                    <Paintbrush className="w-4.5 h-4.5 text-cyan-400" />
-                    <div>
-                      <span className="text-xs md:text-sm font-bold text-white block">🎨 Theme & Visual Layout</span>
-                      <span className="text-[10px] text-slate-400">Select application skins and exclusive gold layouts.</span>
-                    </div>
-                  </div>
-                  <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform duration-300 ${expandedSettingCategory === "theme" ? "rotate-180" : ""}`} />
-                </button>
-
-                {expandedSettingCategory === "theme" && (
-                  <div className="p-4 border-t border-white/10 bg-black/40 space-y-4 animate-fade-in">
-                    {/* Theme Buttons Grid */}
-                    <div className="grid grid-cols-2 xs:grid-cols-3 gap-2.5">
-                      {/* Default Theme */}
-                      <button
-                        onClick={() => setSelectedTheme("default")}
-                        className={`p-3 rounded-xl border text-left transition-all ${
-                          selectedTheme === "default"
-                            ? "border-cyan-400 bg-cyan-500/10 shadow-[0_0_12px_rgba(6,182,212,0.15)] font-bold text-cyan-400"
-                            : "border-white/5 bg-black/20 hover:border-white/10 text-slate-300"
-                        }`}
-                      >
-                        <span className="text-xs block">Default Slate</span>
-                        <div className="flex space-x-1 items-center mt-1.5">
-                          <span className="w-3.5 h-3.5 rounded-full bg-cyan-500 block border border-white/20"></span>
-                          <span className="w-3.5 h-3.5 rounded-full bg-indigo-600 block border border-white/20"></span>
-                        </div>
-                      </button>
-
-                      {/* Dark Theme */}
-                      <button
-                        onClick={() => setSelectedTheme("dark")}
-                        className={`p-3 rounded-xl border text-left transition-all ${
-                          selectedTheme === "dark"
-                            ? "border-purple-400 bg-purple-500/10 shadow-[0_0_12px_rgba(168,85,247,0.15)] font-bold text-purple-400"
-                            : "border-white/5 bg-black/20 hover:border-white/10 text-slate-300"
-                        }`}
-                      >
-                        <span className="text-xs block">Deep Charcoal</span>
-                        <div className="flex space-x-1 items-center mt-1.5">
-                          <span className="w-3.5 h-3.5 rounded-full bg-purple-600 block border border-white/20"></span>
-                          <span className="w-3.5 h-3.5 rounded-full bg-zinc-900 block border border-white/20"></span>
-                        </div>
-                      </button>
-
-                      {/* Gold VIP Theme */}
-                      <button
-                        onClick={() => {
-                          if (!isGoldActive) {
-                            triggerUpgradePopup("👑 The Luxurious Golden VIP layout is a VIP Pro exclusive! Activate your VIP key in the Account tab to unlock this gorgeous golden aesthetic.");
-                            return;
-                          }
-                          setSelectedTheme("gold");
-                        }}
-                        className={`p-3 rounded-xl border text-left transition-all relative overflow-hidden ${
-                          selectedTheme === "gold"
-                            ? "border-amber-400 bg-amber-500/10 shadow-[0_0_12px_rgba(245,158,11,0.2)] font-bold text-amber-400"
-                            : "border-amber-500/10 bg-amber-500/5 hover:border-amber-500/20 text-slate-300"
-                        }`}
-                      >
-                        {!isGoldActive && (
-                          <div className="absolute top-1 right-1">
-                            <Crown className="w-3 h-3 text-amber-500 fill-amber-500/20" />
-                          </div>
-                        )}
-                        <span className="text-xs block flex items-center gap-1">VIP Gold 👑</span>
-                        <div className="flex space-x-1 items-center mt-1.5">
-                          <span className="w-3.5 h-3.5 rounded-full bg-amber-500 block border border-white/20"></span>
-                          <span className="w-3.5 h-3.5 rounded-full bg-yellow-400 block border border-white/20"></span>
-                        </div>
-                      </button>
-
-                      {/* Liquid Glass Theme */}
-                      <button
-                        onClick={() => {
-                          if (!isGoldActive) {
-                            triggerUpgradePopup("👑 The premium Fluid Liquid Glass layout is a VIP Pro exclusive! Activate your VIP key in the Account tab to unlock this premium aesthetic.");
-                            return;
-                          }
-                          setSelectedTheme("liquid");
-                        }}
-                        className={`p-3 rounded-xl border text-left transition-all relative overflow-hidden ${
-                          selectedTheme === "liquid"
-                            ? "border-pink-400 bg-pink-500/10 shadow-[0_0_12px_rgba(236,72,153,0.2)] font-bold text-pink-400"
-                            : "border-pink-500/10 bg-pink-500/5 hover:border-pink-500/20 text-slate-300"
-                        }`}
-                      >
-                        {!isGoldActive && (
-                          <div className="absolute top-1 right-1">
-                            <Crown className="w-3 h-3 text-pink-500" />
-                          </div>
-                        )}
-                        <span className="text-xs block flex items-center gap-1">Liquid 🧪</span>
-                        <div className="flex space-x-1 items-center mt-1.5">
-                          <span className="w-3.5 h-3.5 rounded-full bg-pink-500 block border border-white/20"></span>
-                          <span className="w-3.5 h-3.5 rounded-full bg-purple-600 block border border-white/20"></span>
-                        </div>
-                      </button>
-                    </div>
-
-                    {/* Glass backdrop Toggle */}
-                    <div className="flex items-center justify-between p-3 bg-white/5 rounded-xl border border-white/5">
-                      <div>
-                        <span className="text-xs font-bold text-slate-200 block">Frosted Glass Effect</span>
-                        <span className="text-[10px] text-slate-400 block mt-0.5">Applies beautiful layered blur shadows</span>
-                      </div>
-                      <button
-                        onClick={() => setGlassEffectEnabled(!glassEffectEnabled)}
-                        className={`w-10 h-5.5 rounded-full relative transition-colors duration-300 ${
-                          glassEffectEnabled ? "bg-cyan-500" : "bg-white/15"
-                        }`}
-                      >
-                        <div className={`w-3.5 h-3.5 bg-black rounded-full absolute top-1 transition-all duration-300 ${
-                          glassEffectEnabled ? "right-1" : "left-1"
-                        }`} />
-                      </button>
-                    </div>
-
-                    {/* Gold Custom Panels */}
-                    {isGoldActive && (
-                      <div className="p-3 bg-amber-500/5 border border-amber-500/20 rounded-xl space-y-2.5">
-                        <span className="text-[9px] font-mono text-amber-400 font-bold tracking-wider block">👑 EXCLUSIVE GOLD CONTROLS</span>
-                        
-                        <div className="flex justify-between items-center text-xs">
-                          <span className="text-slate-300">Gold Accent borders</span>
-                          <button
-                            onClick={() => setGoldBordersEnabled(!goldBordersEnabled)}
-                            className={`w-8 h-4.5 rounded-full relative transition-colors ${
-                              goldBordersEnabled ? "bg-amber-500" : "bg-white/10"
-                            }`}
-                          >
-                            <div className={`w-3 h-3 bg-black rounded-full absolute top-0.5 transition-all ${
-                              goldBordersEnabled ? "right-1" : "left-1"
-                            }`} />
-                          </button>
-                        </div>
-
-                        <div className="flex justify-between items-center text-xs border-t border-white/5 pt-2">
-                          <span className="text-slate-300">Golden text highlights</span>
-                          <button
-                            onClick={() => setGoldTextAccentsEnabled(!goldTextAccentsEnabled)}
-                            className={`w-8 h-4.5 rounded-full relative transition-colors ${
-                              goldTextAccentsEnabled ? "bg-amber-500" : "bg-white/10"
-                            }`}
-                          >
-                            <div className={`w-3 h-3 bg-black rounded-full absolute top-0.5 transition-all ${
-                              goldTextAccentsEnabled ? "right-1" : "left-1"
-                            }`} />
-                          </button>
-                        </div>
-
-                        <div className="flex justify-between items-center text-xs border-t border-white/5 pt-2">
-                          <span className="text-slate-300">Glitter background effect</span>
-                          <button
-                            onClick={() => setGoldGlitterEnabled(!goldGlitterEnabled)}
-                            className={`w-8 h-4.5 rounded-full relative transition-colors ${
-                              goldGlitterEnabled ? "bg-amber-500" : "bg-white/10"
-                            }`}
-                          >
-                            <div className={`w-3 h-3 bg-black rounded-full absolute top-0.5 transition-all ${
-                              goldGlitterEnabled ? "right-1" : "left-1"
-                            }`} />
-                          </button>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-
-              {/* Category 2: Audio Settings */}
+              {/* Category 1: Audio Settings */}
               <div className="border border-white/10 rounded-2xl overflow-hidden bg-white/5 transition-all">
                 <button
                   onClick={() => setExpandedSettingCategory(expandedSettingCategory === "audio" ? null : "audio")}
@@ -4214,7 +4377,7 @@ export default function App() {
                     ) : (
                       <div className="space-y-3.5">
                         <p className="text-[11px] text-slate-300 leading-relaxed">
-                          Add <strong>sk edz Player</strong> natively to your phone's home screen or computer's desktop. It launches in a full standalone fullscreen window like a real native app!
+                          Add <strong>ZYNC</strong> natively to your phone's home screen or computer's desktop. It launches in a full standalone fullscreen window like a real native app!
                         </p>
 
                         <button
@@ -4341,7 +4504,7 @@ export default function App() {
               </div>
               
               <div className="space-y-2">
-                <h2 className="text-xl font-extrabold text-white tracking-tight">Welcome to sk edz! 🎧</h2>
+                <h2 className="text-xl font-extrabold text-white tracking-tight">Welcome to ZYNC! 🎧</h2>
                 <p className="text-xs text-slate-300 leading-relaxed max-w-sm mx-auto">
                   Do you want a quick premium tutorial? We'll show you exactly how to unlock professional lossless audio quality and configure deep, rich bass settings!
                 </p>
@@ -4390,7 +4553,7 @@ export default function App() {
                   </div>
                   
                   <p className="text-xs text-slate-300 leading-relaxed">
-                    sk edz supports two powerful streaming quality modes:
+                    ZYNC supports two powerful streaming quality modes:
                   </p>
                   
                   <div className="grid grid-cols-2 gap-3 pt-1">

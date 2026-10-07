@@ -864,7 +864,7 @@ function AdminApp() {
     }
 
     setIsSubmitting(true);
-    setStatusMessage(editingSongId ? "Updating track in database..." : "Saving track to sk edz database...");
+    setStatusMessage(editingSongId ? "Updating track in database..." : "Saving track to ZYNC database...");
 
     try {
       const matchedArtist = artistsList.find(
@@ -965,7 +965,7 @@ function AdminApp() {
 
   // Delete Song
   const handleDeleteSong = async (songId: string) => {
-    if (!confirm("Are you sure you want to delete this song from sk edz?")) return;
+    if (!confirm("Are you sure you want to delete this song from ZYNC?")) return;
 
     try {
       await deleteDoc(doc(db, "songs", songId));

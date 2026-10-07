@@ -1,5 +1,17 @@
 @import "tailwindcss";
 
+:root {
+  --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-display: 'Syne', 'Plus Jakarta Sans', system-ui, sans-serif;
+  --font-mono: 'Space Grotesk', monospace;
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: #000000;
+  color: #f8fafc;
+}
+
 /* Enable clean, free native touch scrolling with inertia while hiding scrollbars globally on all elements */
 * {
   scrollbar-width: none !important; /* Firefox */
@@ -11,6 +23,19 @@ html, body {
   overscroll-behavior-y: auto;
   -webkit-tap-highlight-color: transparent;
   touch-action: manipulation;
+}
+
+/* Luminous Glow & Ambiance Effects */
+.zync-glow-cyan {
+  box-shadow: 0 0 25px -3px rgba(6, 182, 212, 0.35), 0 0 10px -2px rgba(6, 182, 212, 0.5);
+}
+
+.zync-glow-blue {
+  box-shadow: 0 0 25px -3px rgba(59, 130, 246, 0.35), 0 0 10px -2px rgba(59, 130, 246, 0.5);
+}
+
+.zync-text-glow {
+  text-shadow: 0 0 12px rgba(6, 182, 212, 0.4);
 }
 
 .animate-blob, .animate-float {
@@ -25,67 +50,50 @@ html, body {
 }
 
 @layer utilities {
-  /* Liquid Glass Styles */
+  /* Simple, Clean & Modern Dark UI Styles */
   .glass-card {
-    background: linear-gradient(135deg, rgba(255, 255, 255, 0.08) 0%, rgba(255, 255, 255, 0.02) 100%);
-    backdrop-filter: blur(32px) saturate(210%);
-    -webkit-backdrop-filter: blur(32px) saturate(210%);
-    border: 1px solid rgba(255, 255, 255, 0.15);
-    box-shadow: 
-      0 16px 50px -10px rgba(0, 0, 0, 0.65), 
-      inset 0 1px 1px 0 rgba(255, 255, 255, 0.25),
-      inset 0 -1px 2px 0 rgba(255, 255, 255, 0.05);
-    transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.4s ease, box-shadow 0.4s ease;
+    background: #0d131f;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.5);
+    transition: all 0.25s ease-out;
   }
   .glass-card:hover {
-    background: linear-gradient(135deg, rgba(255, 255, 255, 0.11) 0%, rgba(255, 255, 255, 0.04) 100%);
-    border-color: rgba(255, 255, 255, 0.3);
-    box-shadow: 
-      0 24px 60px -8px rgba(0, 0, 0, 0.75), 
-      inset 0 1px 2px 0 rgba(255, 255, 255, 0.35),
-      0 0 15px rgba(255, 255, 255, 0.08);
+    background: #111a2c;
+    border-color: rgba(6, 182, 212, 0.25);
+    box-shadow: 0 8px 30px -4px rgba(0, 0, 0, 0.65);
     transform: translateY(-2px);
   }
 
   .glass-panel {
-    background: linear-gradient(180deg, rgba(12, 14, 28, 0.75) 0%, rgba(4, 5, 10, 0.92) 100%);
-    backdrop-filter: blur(40px) saturate(180%);
-    -webkit-backdrop-filter: blur(40px) saturate(180%);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    box-shadow: 0 30px 80px 0 rgba(0, 0, 0, 0.8), inset 0 1px 0 0 rgba(255, 255, 255, 0.1);
+    background: #080c14;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.7);
   }
 
   .glass-input {
-    background: rgba(0, 0, 0, 0.3);
-    border: 1px solid rgba(255, 255, 255, 0.12);
-    backdrop-filter: blur(20px);
-    transition: all 0.35s cubic-bezier(0.16, 1, 0.3, 1);
-    box-shadow: inset 0 2px 4px 0 rgba(0, 0, 0, 0.25);
+    background: #060910;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    transition: all 0.2s ease;
   }
   .glass-input:focus {
     border-color: rgba(6, 182, 212, 0.7);
-    box-shadow: 
-      0 0 25px rgba(6, 182, 212, 0.35), 
-      inset 0 1px 1px rgba(255, 255, 255, 0.1);
-    background: rgba(0, 0, 0, 0.45);
-    transform: scale-[1.005];
+    box-shadow: 0 0 15px rgba(6, 182, 212, 0.2);
+    background: #090e18;
   }
 
-  /* Ultimate Glass Buttons */
+  /* Clean Dark Buttons */
   .glass-button {
-    background: rgba(255, 255, 255, 0.06);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    backdrop-filter: blur(12px);
-    transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    transition: all 0.2s ease;
   }
   .glass-button:hover {
-    background: rgba(255, 255, 255, 0.12);
-    border-color: rgba(255, 255, 255, 0.25);
+    background: rgba(255, 255, 255, 0.1);
+    border-color: rgba(255, 255, 255, 0.18);
     transform: translateY(-1px);
-    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.3);
   }
   .glass-button:active {
-    transform: translateY(1px);
+    transform: translateY(0px);
     background: rgba(255, 255, 255, 0.03);
   }
 }
