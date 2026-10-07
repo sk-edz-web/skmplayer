@@ -1300,8 +1300,6 @@ export default function App() {
     setCurrentSongIndex(index);
     setIsPlaying(true);
     setIsBuffering(false);
-    // Open immersive edge-to-edge full screen player on PC & mobile
-    setIsMobileOverlayOpen(true);
 
 
 
@@ -1796,11 +1794,11 @@ export default function App() {
 
     try {
       const now = Date.now();
-      const durationDays = planType === 199 ? 60 : 30;
+      const durationDays = 30;
       const calculatedExpiresAt = now + durationDays * 24 * 60 * 60 * 1000;
       const expiresISO = new Date(calculatedExpiresAt).toISOString();
       const expiresFormatted = new Date(calculatedExpiresAt).toLocaleDateString();
-      const planTitle = planType === 199 ? "₹199 ZYNC VIP Master Pass (60 Days)" : "₹99 ZYNC VIP Gold Pass (30 Days)";
+      const planTitle = planType === 199 ? "₹199 ZYNC VIP Master Pass (30 Days)" : "₹99 ZYNC VIP Gold Pass (30 Days)";
 
       // Direct Firebase users document update with active stats
       const userDocRef = doc(db, "users", user.uid);
@@ -3636,7 +3634,6 @@ export default function App() {
                                     <Crown className="w-3.5 h-3.5 text-amber-400" />
                                   </div>
                                   <span className="text-[10px] text-slate-300 block mt-1">30 Days VIP Gold</span>
-                                  <span className="text-[9px] text-amber-400/90 font-bold font-mono mt-1 block">Save to Firebase →</span>
                                 </button>
 
                                 <button
@@ -3648,8 +3645,7 @@ export default function App() {
                                     <span className="text-xs font-black text-purple-300">₹199 Master</span>
                                     <Crown className="w-3.5 h-3.5 text-purple-400" />
                                   </div>
-                                  <span className="text-[10px] text-slate-300 block mt-1">60 Days VIP Master</span>
-                                  <span className="text-[9px] text-purple-300/90 font-bold font-mono mt-1 block">Save to Firebase →</span>
+                                  <span className="text-[10px] text-slate-300 block mt-1">30 Days VIP Master</span>
                                 </button>
                               </div>
 
@@ -4183,7 +4179,6 @@ export default function App() {
                       <Crown className="w-3.5 h-3.5 text-amber-400" />
                     </div>
                     <span className="text-[10px] text-slate-300 block mt-0.5">30 Days Pass</span>
-                    <span className="text-[9px] text-amber-400 font-bold font-mono mt-1 block">Save to Firebase →</span>
                   </button>
 
                   <button
@@ -4195,8 +4190,7 @@ export default function App() {
                       <span className="text-xs font-black text-purple-300">₹199 Master</span>
                       <Crown className="w-3.5 h-3.5 text-purple-400" />
                     </div>
-                    <span className="text-[10px] text-slate-300 block mt-0.5">60 Days Pass</span>
-                    <span className="text-[9px] text-purple-300 font-bold font-mono mt-1 block">Save to Firebase →</span>
+                    <span className="text-[10px] text-slate-300 block mt-0.5">30 Days Pass</span>
                   </button>
                 </div>
 
