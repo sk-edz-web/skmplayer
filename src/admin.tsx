@@ -77,7 +77,8 @@ import {
   Cloud,
   History,
   Folder,
-  ListMusic
+  ListMusic,
+  Film
 } from "lucide-react";
 import { Song, Playlist, ReportItem, ReportStatus, AppNotification, SubscriptionKey, ArtistProfile } from "./types";
 import AdminReportsManager from "./components/AdminReportsManager";
@@ -86,6 +87,7 @@ import AdminCloudinaryManager from "./components/AdminCloudinaryManager";
 import AdminBulkUpload from "./components/AdminBulkUpload";
 import AdminLastUpdated from "./components/AdminLastUpdated";
 import AdminPlaylistsManager from "./components/AdminPlaylistsManager";
+import { AdminVideosManager } from "./components/AdminVideosManager";
 import { uploadToCloudinaryDirect } from "./lib/cloudinary";
 import { parseLyrics, hasLyrics, fetchLyricsFromUrl } from "./utils/lyricsParser";
 import { extractAudioFileMetadata, ExtractedAudioMetadata } from "./utils/audioMetadataParser";
@@ -103,7 +105,7 @@ function AdminApp() {
   const [isLoggingIn, setIsLoggingIn] = useState<boolean>(false);
 
   // Tab State
-  const [activeTab, setActiveTab] = useState<"songs" | "batch" | "duplicates" | "playlists" | "artists" | "keys" | "cloudinary" | "reports" | "updates">("songs");
+  const [activeTab, setActiveTab] = useState<"songs" | "videos" | "batch" | "duplicates" | "playlists" | "artists" | "keys" | "cloudinary" | "reports" | "updates">("songs");
   // Find Duplicate Songs State
   const [showDuplicatesOnly, setShowDuplicatesOnly] = useState<boolean>(false);
   const [duplicateSearchTerm, setDuplicateSearchTerm] = useState<string>("");
@@ -1695,6 +1697,21 @@ function AdminApp() {
             <span>Tracks Manager</span>
             <span className="text-[10px] font-mono px-1.5 py-0.5 rounded-md bg-black/20 text-white ml-1 font-bold">
               {songs.length}
+            </span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab("videos")}
+            className={`flex items-center space-x-2 px-5 py-2.5 rounded-xl font-bold text-xs transition-all duration-300 ${
+              activeTab === "videos"
+                ? "bg-gradient-to-r from-red-600 to-rose-600 text-white shadow-lg shadow-red-500/25"
+                : "text-slate-400 hover:text-slate-200 hover:bg-white/5"
+            }`}
+          >
+            <Film className="w-4 h-4 text-red-400" />
+            <span>Videos & ImgBB</span>
+            <span className="text-[9px] font-mono font-bold px-1.5 py-0.5 rounded-md bg-red-500/20 text-red-300 border border-red-400/30 uppercase ml-1">
+              4K/HD
             </span>
           </button>
 
@@ -3786,6 +3803,11 @@ function AdminApp() {
             onSongAdded={fetchSongs}
             onShowToast={showAdminToast}
           />
+        )}
+
+        {/* Tab: Videos Manager & ImgBB */}
+        {activeTab === "videos" && (
+          <AdminVideosManager onShowToast={showAdminToast} />
         )}
 
         {/* Tab 6: Last Updated & System Changelog */}

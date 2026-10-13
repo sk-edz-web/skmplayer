@@ -131,11 +131,9 @@ html, body {
 @keyframes fade-in {
   from {
     opacity: 0;
-    transform: scale(0.98);
   }
   to {
     opacity: 1;
-    transform: scale(1);
   }
 }
 
@@ -359,6 +357,72 @@ input[type="range"]::-webkit-slider-thumb:hover {
 
 .animate-blob {
   animation: blob-bounce 20s ease-in-out infinite;
+}
+
+/* YouTube-style ZYNC App Logo Splash Animation */
+@keyframes yt-logo-pulse {
+  0% {
+    transform: scale(0.92);
+    opacity: 0.85;
+  }
+  50% {
+    transform: scale(1.05);
+    opacity: 1;
+    filter: drop-shadow(0 0 24px rgba(6, 182, 212, 0.7));
+  }
+  100% {
+    transform: scale(0.92);
+    opacity: 0.85;
+  }
+}
+
+@keyframes yt-ring-expand {
+  0% {
+    transform: scale(0.7);
+    opacity: 0.9;
+  }
+  100% {
+    transform: scale(1.6);
+    opacity: 0;
+  }
+}
+
+@keyframes yt-eq-bar-1 {
+  0%, 100% { height: 16px; }
+  50% { height: 44px; }
+}
+@keyframes yt-eq-bar-2 {
+  0%, 100% { height: 40px; }
+  50% { height: 20px; }
+}
+@keyframes yt-eq-bar-3 {
+  0%, 100% { height: 24px; }
+  50% { height: 46px; }
+}
+@keyframes yt-eq-bar-4 {
+  0%, 100% { height: 36px; }
+  50% { height: 16px; }
+}
+
+.animate-yt-pulse {
+  animation: yt-logo-pulse 1.8s ease-in-out infinite;
+}
+
+.animate-yt-ring {
+  animation: yt-ring-expand 1.8s cubic-bezier(0, 0.2, 0.8, 1) infinite;
+}
+
+.animate-yt-eq-1 {
+  animation: yt-eq-bar-1 0.8s ease-in-out infinite;
+}
+.animate-yt-eq-2 {
+  animation: yt-eq-bar-2 0.7s ease-in-out infinite 0.1s;
+}
+.animate-yt-eq-3 {
+  animation: yt-eq-bar-3 0.9s ease-in-out infinite 0.2s;
+}
+.animate-yt-eq-4 {
+  animation: yt-eq-bar-4 0.75s ease-in-out infinite 0.15s;
 }
 
 /* Scrollbar utility classes are defined at the top of the file */

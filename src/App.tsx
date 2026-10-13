@@ -16,7 +16,8 @@ import {
   deleteDoc, 
   query, 
   where, 
-  orderBy 
+  orderBy,
+  increment
 } from "firebase/firestore";
 import { onAuthStateChanged, signOut, updateProfile } from "firebase/auth";
 import { 
@@ -63,18 +64,21 @@ import {
   AlertTriangle,
   MessageSquare,
   AlignLeft,
-  ChevronLeft
+  ChevronLeft,
+  Film
 } from "lucide-react";
 import { Song, Playlist, UserProfile, VideoItem, AppNotification, ArtistProfile } from "./types";
 import AuthPanel from "./components/AuthPanel";
 import MobilePlayerOverlay from "./components/MobilePlayerOverlay";
 import SpotifyLyricsOverlay from "./components/SpotifyLyricsOverlay";
 import LyricBadge from "./components/LyricBadge";
+import { VideoView } from "./components/VideoView";
 import { hasLyrics } from "./utils/lyricsParser";
 import EqualizerModal, { EqSettings } from "./components/EqualizerModal";
 import ReportModal from "./components/ReportModal";
 import NotificationsCenter from "./components/NotificationsCenter";
 import ZyncLogo from "./components/ZyncLogo";
+import { ZyncAppSplash } from "./components/ZyncAppSplash";
 import { saveLocalSong, getLocalSongs, deleteLocalSong, clearLocalSongs } from "./lib/localDb";
 
 interface ID3Metadata {
@@ -204,7 +208,7 @@ function getSongStreamUrl(song: Song | null): string {
 
 export default function App() {
   // Navigation & View States
-  const [activeTab, setActiveTab] = useState<"home" | "search" | "playlist" | "account" | "local">("home");
+  const [activeTab, setActiveTab] = useState<"home" | "search" | "videos" | "playlist" | "account" | "local">("home");
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedPlaylist, setSelectedPlaylist] = useState<Playlist | null>(null);
   const [genreFilter, setGenreFilter] = useState("All");
@@ -213,6 +217,15 @@ export default function App() {
   const [user, setUser] = useState<any>(null);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [loadingAuth, setLoadingAuth] = useState(true);
+  const [isAppLaunching, setIsAppLaunching] = useState(true);
+
+  // YouTube-style App Opening Loading Animation on app launch
+  useEffect(() => {
+    const splashTimer = setTimeout(() => {
+      setIsAppLaunching(false);
+    }, 1200);
+    return () => clearTimeout(splashTimer);
+  }, []);
 
   // Upgrade popup state and logic
   const [isUpgradePopupOpen, setIsUpgradePopupOpen] = useState(false);
@@ -323,6 +336,8 @@ export default function App() {
   const [videoEqActive, setVideoEqActive] = useState(true);
   const [youtubeSearchQuery, setYoutubeSearchQuery] = useState("");
   const [isVideoPlaying, setIsVideoPlaying] = useState(false);
+  const [databaseVideos, setDatabaseVideos] = useState<VideoItem[]>([]);
+  const [loadingVideos, setLoadingVideos] = useState(true);
 
   // System Configuration, PWA & Swipe States
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -1077,6 +1092,41 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
+  // Listen to Database Videos (Real-time sync!)
+  useEffect(() => {
+    const q = query(collection(db, "videos"), orderBy("createdAt", "desc"));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const videoList: VideoItem[] = [];
+      snapshot.forEach((docSnap) => {
+        const data = docSnap.data();
+        videoList.push({
+          id: docSnap.id,
+          title: data.title || "Untitled Video",
+          creator: data.creator || "ZYNC Official",
+          description: data.description || "",
+          category: data.category || "Music Video",
+          url: data.url || data.videoUrl || "",
+          videoUrl: data.videoUrl || data.url || "",
+          isYouTube: data.isYouTube ?? false,
+          resolutions: data.resolutions || {},
+          thumbnailUrl: data.thumbnailUrl || "",
+          duration: Number(data.duration) || 0,
+          likes: Number(data.likes) || 0,
+          views: Number(data.views) || 0,
+          createdAt: data.createdAt || Date.now(),
+          userId: data.userId || "admin"
+        });
+      });
+      setDatabaseVideos(videoList);
+      setLoadingVideos(false);
+    }, (error) => {
+      console.warn("Videos subscription error:", error);
+      setLoadingVideos(false);
+    });
+
+    return () => unsubscribe();
+  }, []);
+
   // Listen to Database Playlists (Real-time sync!)
   useEffect(() => {
     if (!user) {
@@ -1300,6 +1350,12 @@ export default function App() {
     setCurrentSongIndex(index);
     setIsPlaying(true);
     setIsBuffering(false);
+
+    // If a video was playing, pause and clear video player
+    if (currentVideo) {
+      setCurrentVideo(null);
+      setIsVideoPlaying(false);
+    }
 
 
 
@@ -1998,6 +2054,53 @@ export default function App() {
     
     setCurrentVideo(video);
     setIsVideoPlaying(true);
+    setActiveTab("videos");
+  };
+
+  const handleSelectVideo = (video: VideoItem | null) => {
+    if (video) {
+      playVideoItem(video);
+    } else {
+      setCurrentVideo(null);
+    }
+  };
+
+  const handleGoToMusic = () => {
+    setCurrentVideo(null);
+    setActiveTab("home");
+  };
+
+  // Real-time Video View Counter (Database Firestore Increment)
+  const handleRecordVideoView = async (videoId: string) => {
+    try {
+      // Optimistic update for instant UI feedback
+      setCurrentVideo(prev => prev && prev.id === videoId ? { ...prev, views: (Number(prev.views) || 0) + 1 } : prev);
+      setDatabaseVideos(prev => prev.map(v => v.id === videoId ? { ...v, views: (Number(v.views) || 0) + 1 } : v));
+
+      const videoRef = doc(db, "videos", videoId);
+      await updateDoc(videoRef, {
+        views: increment(1)
+      });
+    } catch (err) {
+      console.warn("Firestore video views increment error:", err);
+    }
+  };
+
+  // Real-time Video Likes Counter (Database Firestore Increment/Decrement)
+  const handleLikeVideo = async (videoId: string, isCurrentlyLiked: boolean) => {
+    try {
+      const delta = isCurrentlyLiked ? -1 : 1;
+      // Optimistic update for instant UI feedback
+      setCurrentVideo(prev => prev && prev.id === videoId ? { ...prev, likes: Math.max(0, (Number(prev.likes) || 0) + delta) } : prev);
+      setDatabaseVideos(prev => prev.map(v => v.id === videoId ? { ...v, likes: Math.max(0, (Number(v.likes) || 0) + delta) } : v));
+
+      const videoRef = doc(db, "videos", videoId);
+      await updateDoc(videoRef, {
+        likes: increment(delta)
+      });
+    } catch (err) {
+      console.warn("Firestore video likes toggle error:", err);
+    }
   };
 
 
@@ -2082,24 +2185,8 @@ export default function App() {
     }
   };
 
-  if (loadingAuth) {
-    return (
-      <div className="min-h-screen w-full bg-[#04050a] flex flex-col items-center justify-center text-white select-none relative overflow-hidden">
-        {/* Glow effect */}
-        <div className="absolute w-64 h-64 bg-cyan-500/10 rounded-full blur-[80px]"></div>
-        
-        {/* ZYNC Animated Emblem */}
-        <div className="relative flex flex-col items-center">
-          <div className="flex items-center space-x-2.5 mb-6">
-            <ZyncLogo size="xl" showSubtitle={true} showText={true} />
-          </div>
-          
-          <p className="text-[11px] text-slate-400 font-mono tracking-wider mt-2 uppercase">
-            Syncing high-fidelity audio session...
-          </p>
-        </div>
-      </div>
-    );
+  if (loadingAuth || isAppLaunching) {
+    return <ZyncAppSplash statusText="Syncing high-fidelity session..." />;
   }
 
   if (!user) {
@@ -2130,10 +2217,10 @@ export default function App() {
         currentSong ? "mb-36 md:mb-28" : "mb-20 md:mb-24"
       }`}>
         
-        {/* Unified Glass Header Navigation */}
-        <header className="flex items-center justify-between p-3.5 md:p-5 glass-card rounded-[28px] border border-white/10 relative overflow-hidden shadow-2xl">
+        {/* Unified Glass Header Navigation - Edge-to-Edge with no curved borders */}
+        <header className="flex items-center justify-between p-3.5 md:p-5 glass-card rounded-none -mx-3 sm:-mx-6 md:mx-0 border-x-0 border-t-0 border-b border-white/10 relative overflow-hidden shadow-2xl">
           {/* Glass Sheen / Reflective Highlight Line */}
-          <div className="absolute top-0 inset-x-0 h-[1.5px] bg-gradient-to-r from-transparent via-white/25 to-transparent rounded-t-[28px] pointer-events-none"></div>
+          <div className="absolute top-0 inset-x-0 h-[1.5px] bg-gradient-to-r from-transparent via-white/25 to-transparent pointer-events-none"></div>
           
           {/* ZYNC Brand Logo */}
           <div className="flex items-center space-x-3.5 relative z-10">
@@ -2171,6 +2258,18 @@ export default function App() {
             >
               <Music className="w-4 h-4" />
               <span>Discover</span>
+            </button>
+
+            <button 
+              onClick={() => { setActiveTab("videos"); setSelectedPlaylist(null); }}
+              className={`flex items-center space-x-2 px-4 py-2.5 rounded-2xl transition-all duration-300 text-xs font-black border ${
+                activeTab === "videos" && !selectedPlaylist
+                  ? "bg-red-500/15 backdrop-blur-md shadow-[inset_0_1px_1px_rgba(255,255,255,0.15)] text-red-400 border-red-500/40" 
+                  : "text-slate-400 hover:text-slate-200 hover:bg-white/5 border-transparent"
+              }`}
+            >
+              <Film className="w-4 h-4 text-red-400" />
+              <span>Videos</span>
             </button>
  
             <button 
@@ -2822,6 +2921,18 @@ export default function App() {
           )}
         </div>
       )}
+
+          {/* VIDEOS VIEW */}
+          {activeTab === "videos" && !selectedPlaylist && (
+            <VideoView 
+              videos={databaseVideos}
+              currentVideo={currentVideo}
+              onSelectVideo={handleSelectVideo}
+              onGoToMusic={handleGoToMusic}
+              onLikeVideo={handleLikeVideo}
+              onRecordVideoView={handleRecordVideoView}
+            />
+          )}
 
           {/* 2. SEARCH BAR VIEW */}
           {activeTab === "search" && !selectedPlaylist && (
@@ -3836,8 +3947,8 @@ export default function App() {
       )}
 
       {/* PERSISTENT PLAYBAR CONTROLLER */}
-      {currentSong && (
-        <div className="fixed bottom-[84px] md:bottom-6 left-3 right-3 md:left-6 md:right-6 md:max-w-6xl md:mx-auto bg-[#0d131f]/95 backdrop-blur-xl border border-white/[0.1] py-3 px-4 md:px-8 z-30 select-none shadow-[0_16px_40px_rgba(0,0,0,0.7)] rounded-2xl md:rounded-3xl transition-all duration-200 hover:border-cyan-500/30 overflow-hidden">
+      {currentSong && !currentVideo && (
+        <div className="fixed bottom-[74px] sm:bottom-[78px] md:bottom-6 left-3 right-3 sm:left-4 sm:right-4 md:left-6 md:right-6 md:max-w-6xl md:mx-auto bg-[#0d131f]/95 backdrop-blur-xl border border-white/[0.1] py-3 px-4 md:px-8 z-30 select-none shadow-[0_16px_40px_rgba(0,0,0,0.7)] rounded-2xl md:rounded-3xl transition-all duration-200 hover:border-cyan-500/30 overflow-hidden">
           <div className="max-w-7xl mx-auto flex items-center justify-between gap-4">
             
             {/* Song Cover Details - Trigger Immersive Full-Screen Player on click */}
@@ -4024,7 +4135,7 @@ export default function App() {
       )}
 
       {/* MOBILE BOTTOM NAVIGATION (Tab selectors) */}
-      <nav className="fixed bottom-4 inset-x-4 bg-[#0a0c16]/75 backdrop-blur-3xl border border-white/10 py-3 px-6 flex md:hidden justify-between items-center z-20 rounded-2xl shadow-[0_15px_40px_rgba(0,0,0,0.7)]">
+      <nav className="fixed bottom-3 inset-x-3 sm:bottom-4 sm:inset-x-4 bg-[#0a0c16]/85 backdrop-blur-3xl border border-white/10 h-[58px] px-3 sm:px-6 flex md:hidden justify-between items-center z-40 rounded-2xl shadow-[0_15px_40px_rgba(0,0,0,0.7)]">
         {/* Glass top sheen */}
         <div className="absolute top-0 inset-x-0 h-[1px] bg-gradient-to-r from-transparent via-white/15 to-transparent rounded-t-2xl pointer-events-none"></div>
         <button 
@@ -4035,6 +4146,16 @@ export default function App() {
         >
           <Music className="w-5 h-5" />
           <span className="text-[10px] font-semibold">Discover</span>
+        </button>
+
+        <button 
+          onClick={() => { setActiveTab("videos"); setSelectedPlaylist(null); }}
+          className={`flex flex-col items-center space-y-1 transition-colors ${
+            activeTab === "videos" ? "text-red-400" : "text-slate-400"
+          }`}
+        >
+          <Film className="w-5 h-5" />
+          <span className="text-[10px] font-semibold">Videos</span>
         </button>
 
         <button 

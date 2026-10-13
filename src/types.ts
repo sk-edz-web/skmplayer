@@ -81,11 +81,25 @@ export interface SubscriptionKey {
 
 export interface VideoItem {
   id: string;
-  userId: string;
+  userId?: string;
   title: string;
-  url: string;
-  type: "youtube" | "my_media";
+  creator?: string; // Channel or artist name
+  description?: string;
+  category?: string;
+  url: string; // Video URL (YouTube or direct stream)
+  videoUrl?: string; // Fallback alias
+  type?: "youtube" | "direct" | "my_media";
+  isYouTube?: boolean;
+  resolutions?: {
+    "4k"?: string;
+    "1080p"?: string;
+    "720p"?: string;
+    "480p"?: string;
+  };
   thumbnailUrl?: string;
+  duration?: number; // duration in seconds
+  likes?: number;
+  views?: number;
   createdAt: number;
 }
 

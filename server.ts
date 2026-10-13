@@ -244,6 +244,176 @@ async function startServer() {
     }
   });
 
+  // Video Metadata & Accurate Duration Auto-Detection Route
+  app.get("/api/video-info", async (req, res) => {
+    try {
+      const rawUrl = String(req.query.url || req.query.videoUrl || "").trim();
+      if (!rawUrl) {
+        return res.status(400).json({ success: false, message: "Video URL is required" });
+      }
+
+      // 1. YouTube Video Detection & Parsing
+      const ytRegex = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/|youtube\.com\/shorts\/)([^"&?\/\s]{11})/;
+      let videoId = rawUrl.length === 11 && /^[a-zA-Z0-9_-]{11}$/.test(rawUrl) 
+        ? rawUrl 
+        : null;
+
+      if (!videoId) {
+        const match = rawUrl.match(ytRegex);
+        if (match && match[1]) {
+          videoId = match[1];
+        }
+      }
+
+      if (videoId) {
+        let title = "";
+        let creator = "";
+        let duration: number | null = null;
+        let description = "";
+        let category = "Music Video";
+        let thumbnailUrl = `https://i.ytimg.com/vi/${videoId}/maxresdefault.jpg`;
+
+        // 1a. Try noembed & YouTube oEmbed
+        try {
+          const oembedRes = await fetch(`https://noembed.com/embed?url=https://www.youtube.com/watch?v=${videoId}`, {
+            headers: { "User-Agent": "Mozilla/5.0" }
+          });
+          if (oembedRes.ok) {
+            const data: any = await oembedRes.json();
+            if (data.title) title = data.title;
+            if (data.author_name) creator = data.author_name;
+            if (data.thumbnail_url) thumbnailUrl = data.thumbnail_url;
+          }
+        } catch (e) {
+          console.warn("[Video Info] noembed fetch error:", e);
+        }
+
+        if (!title) {
+          try {
+            const ytOembed = await fetch(`https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`);
+            if (ytOembed.ok) {
+              const data: any = await ytOembed.json();
+              if (data.title) title = data.title;
+              if (data.author_name) creator = data.author_name;
+              if (data.thumbnail_url) thumbnailUrl = data.thumbnail_url;
+            }
+          } catch (e) {
+            console.warn("[Video Info] youtube oembed error:", e);
+          }
+        }
+
+        // 1b. Fetch YouTube watch page HTML for accurate duration & metadata
+        try {
+          const watchRes = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
+            headers: {
+              "Accept-Language": "en-US,en;q=0.9",
+              "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            }
+          });
+          if (watchRes.ok) {
+            const html = await watchRes.text();
+
+            // Duration: parse lengthSeconds
+            const mLength = html.match(/"lengthSeconds":"(\d+)"/);
+            if (mLength && mLength[1]) {
+              duration = parseInt(mLength[1], 10);
+            }
+
+            // Fallback ISO duration: itemprop="duration" content="PT3M34S"
+            if (!duration) {
+              const mIso = html.match(/itemprop="duration" content="PT([^"]+)"/);
+              if (mIso && mIso[1]) {
+                const iso = mIso[1];
+                let sec = 0;
+                const h = iso.match(/(\d+)H/);
+                const m = iso.match(/(\d+)M/);
+                const s = iso.match(/(\d+)S/);
+                if (h) sec += parseInt(h[1], 10) * 3600;
+                if (m) sec += parseInt(m[1], 10) * 60;
+                if (s) sec += parseInt(s[1], 10);
+                if (sec > 0) duration = sec;
+              }
+            }
+
+            // Fallback heatmap max end
+            if (!duration) {
+              const re = /"startMillis":"(\d+)","durationMillis":"(\d+)"/g;
+              let maxEnd = 0;
+              let match;
+              while ((match = re.exec(html)) !== null) {
+                const end = (parseInt(match[1], 10) + parseInt(match[2], 10)) / 1000;
+                if (end > maxEnd) maxEnd = end;
+              }
+              if (maxEnd > 0) duration = Math.round(maxEnd);
+            }
+
+            // Title fallback
+            if (!title) {
+              const mTitle = html.match(/<meta name="title" content="([^"]*)"/);
+              if (mTitle && mTitle[1]) title = mTitle[1];
+            }
+
+            // Description
+            const mDesc = html.match(/<meta name="description" content="([^"]*)"/);
+            if (mDesc && mDesc[1]) {
+              description = mDesc[1];
+            }
+
+            // Genre / Category
+            const mGenre = html.match(/<meta itemprop="genre" content="([^"]*)"/);
+            if (mGenre && mGenre[1]) {
+              category = mGenre[1] === "Music" ? "Music Video" : mGenre[1];
+            }
+          }
+        } catch (e) {
+          console.warn("[Video Info] watch page scrape error:", e);
+        }
+
+        // Auto infer category from title keywords
+        if (title) {
+          const lower = title.toLowerCase();
+          if (lower.includes("live") || lower.includes("concert")) category = "Live Concert";
+          else if (lower.includes("remix")) category = "Remix";
+          else if (lower.includes("lofi") || lower.includes("lo-fi") || lower.includes("acoustic")) category = "Lofi / Acoustic";
+          else if (lower.includes("audio") || lower.includes("lyric")) category = "Official Audio";
+          else if (lower.includes("video") || lower.includes("song")) category = "Music Video";
+        }
+
+        if (!description && title) {
+          description = `${title}${creator ? ` by ${creator}` : ""}. Available to stream on ZYNC.`;
+        }
+
+        return res.json({
+          success: true,
+          isYouTube: true,
+          videoId,
+          title: title || `YouTube Video (${videoId})`,
+          creator: creator || "YouTube Creator",
+          duration: duration || 215,
+          description,
+          category,
+          thumbnailUrl
+        });
+      }
+
+      // 2. Non-YouTube Direct URL
+      return res.json({
+        success: true,
+        isYouTube: false,
+        videoId: null,
+        title: "",
+        creator: "",
+        duration: null,
+        description: "",
+        category: "Music Video",
+        thumbnailUrl: ""
+      });
+    } catch (err: any) {
+      console.error("[Video Info] Route error:", err);
+      return res.status(500).json({ success: false, message: err.message });
+    }
+  });
+
 
 
   // Serve static assets and frontend SPA build
