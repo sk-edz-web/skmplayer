@@ -66,6 +66,14 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   
   // Track if user explicitly paused or cancelled playback to prevent delayed autoplay bugs
   const userPausedRef = useRef<boolean>(false);
+  const isPlayerReadyRef = useRef<boolean>(false);
+  const pendingPlayRef = useRef<boolean>(false);
+  const autoPlayRef = useRef<boolean>(autoPlay);
+  autoPlayRef.current = autoPlay;
+  const onEndedRef = useRef<(() => void) | undefined>(onEnded);
+  onEndedRef.current = onEnded;
+  const triggerRecordViewRef = useRef<(() => void) | null>(null);
+  const savedPositionOnQualityChangeRef = useRef<number | null>(null);
 
   const rawUrl = video.url || video.videoUrl || "";
   const ytId = useMemo(() => extractYouTubeId(rawUrl), [rawUrl]);
@@ -87,6 +95,28 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     side: "left" | "right";
     label: string;
   } | null>(null);
+
+  // Fullscreen Landscape Orientation State
+  const [forceLandscape, setForceLandscape] = useState<boolean>(false);
+  const [windowDimensions, setWindowDimensions] = useState({
+    width: typeof window !== "undefined" ? window.innerWidth : 0,
+    height: typeof window !== "undefined" ? window.innerHeight : 0
+  });
+
+  useEffect(() => {
+    const handleResize = () => {
+      setWindowDimensions({
+        width: window.innerWidth,
+        height: window.innerHeight
+      });
+    };
+    window.addEventListener("resize", handleResize);
+    window.addEventListener("orientationchange", handleResize);
+    return () => {
+      window.removeEventListener("resize", handleResize);
+      window.removeEventListener("orientationchange", handleResize);
+    };
+  }, []);
 
   // Available stream resolution map for direct video files
   const availableResolutions = useMemo(() => {
@@ -116,11 +146,14 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       }
     }
   }, [video.id, onViewRecorded]);
+  triggerRecordViewRef.current = triggerRecordView;
 
-  // Reset player states & trigger YouTube-style opening splash when video changes
+  // Reset player states ONLY when switching to a different video ID
   useEffect(() => {
     setIsPlaying(false);
     userPausedRef.current = false;
+    isPlayerReadyRef.current = false;
+    pendingPlayRef.current = autoPlay;
     setCurrentTime(0);
     setDuration(video.duration || 0);
     setSelectedQuality("Auto");
@@ -133,8 +166,11 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
     if (videoRef.current) {
       videoRef.current.currentTime = 0;
+      if (autoPlay) {
+        videoRef.current.play().catch(() => {});
+      }
     }
-  }, [video.id, video.duration]);
+  }, [video.id]);
 
   // Clean polling timer on unmount
   useEffect(() => {
@@ -155,7 +191,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     }, 1400);
   }, [isPlaying, showSettingsModal]);
 
-  // Initialize YouTube Iframe API Player with custom controls & guarded playback
+  // Initialize YouTube Iframe API Player ONLY on ytId change (NEVER recreate on settings or captions)
   useEffect(() => {
     if (!ytId) return;
 
@@ -185,30 +221,53 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           width: "100%",
           height: "100%",
           playerVars: {
-            autoplay: autoPlay ? 1 : 0,
-            controls: 0, // HIDE NATIVE CONTROLS
-            disablekb: 1,
-            fs: 0,
-            rel: 0,
-            modestbranding: 1,
-            iv_load_policy: 3,
-            showinfo: 0,
-            playsinline: 1,
+            autoplay: autoPlayRef.current ? 1 : 0,
+            controls: 0, // 100% HIDE ALL YOUTUBE CONTROLS
+            disablekb: 1, // Disable keyboard controls inside iframe
+            fs: 0, // Disable YouTube fullscreen button
+            rel: 0, // No related videos
+            modestbranding: 1, // Suppress YouTube branding
+            iv_load_policy: 3, // Hide interactive cards and popups
+            showinfo: 0, // Hide video title and uploader info
+            playsinline: 1, // Inline playback
             enablejsapi: 1,
-            origin: window.location.origin
+            origin: window.location.origin,
+            cc_load_policy: 0, // 100% Disable CC
+            cc_lang_pref: "none"
           },
           events: {
             onReady: (event: any) => {
               if (!isMounted) return;
+              isPlayerReadyRef.current = true;
               const dur = event.target.getDuration();
               if (dur && dur > 0) setDuration(dur);
               event.target.setVolume(volume * 100);
               if (isMuted) event.target.mute();
 
+              // Completely disable any native caption modules
+              try {
+                if (typeof event.target.unloadModule === "function") {
+                  event.target.unloadModule("captions");
+                }
+                if (typeof event.target.setOption === "function") {
+                  event.target.setOption("captions", "track", {});
+                  event.target.setOption("captions", "fontSize", 0);
+                }
+              } catch (e) {}
+
               // PREVENT DELAYED UNEXPECTED AUTOPLAY:
-              // Only start playback if autoPlay requested AND user did NOT explicitly pause!
-              if (autoPlay && !userPausedRef.current) {
-                event.target.playVideo();
+              if ((autoPlayRef.current || pendingPlayRef.current) && !userPausedRef.current) {
+                try {
+                  event.target.playVideo();
+                } catch (e) {
+                  try {
+                    event.target.mute();
+                    setIsMuted(true);
+                    event.target.playVideo();
+                  } catch (err) {
+                    console.warn("Autoplay playback fallback error:", err);
+                  }
+                }
               } else if (userPausedRef.current) {
                 event.target.pauseVideo();
               }
@@ -218,7 +277,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
               if (event.data === 1) { // PLAYING
                 setIsPlaying(true);
                 setIsBuffering(false);
-                triggerRecordView();
+                if (triggerRecordViewRef.current) triggerRecordViewRef.current();
               } else if (event.data === 2) { // PAUSED
                 setIsPlaying(false);
                 setIsBuffering(false);
@@ -229,8 +288,14 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                 setIsPlaying(false);
                 setIsBuffering(false);
                 setShowControls(true);
-                if (onEnded) onEnded();
+                if (onEndedRef.current) onEndedRef.current();
               }
+            },
+            onError: (event: any) => {
+              if (!isMounted) return;
+              console.warn("YouTube player error event:", event.data);
+              setIsBuffering(false);
+              setIsPlaying(false);
             }
           }
         });
@@ -261,6 +326,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
     return () => {
       isMounted = false;
+      isPlayerReadyRef.current = false;
       if (pollInterval) clearInterval(pollInterval);
       if (ytPlayerRef.current) {
         try {
@@ -271,11 +337,19 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         ytPlayerRef.current = null;
       }
     };
-  }, [ytId, autoPlay, triggerRecordView, onEnded]);
+  }, [ytId]);
 
   // Robust Unified Play / Pause Action
   const togglePlay = useCallback(() => {
-    if (ytId && ytPlayerRef.current) {
+    if (ytId) {
+      if (!ytPlayerRef.current || !isPlayerReadyRef.current) {
+        pendingPlayRef.current = true;
+        userPausedRef.current = false;
+        setIsPlaying(true);
+        setIsBuffering(true);
+        return;
+      }
+
       try {
         const pState = typeof ytPlayerRef.current.getPlayerState === "function" 
           ? ytPlayerRef.current.getPlayerState() 
@@ -285,11 +359,13 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         if (pState === 1 || pState === 3 || isPlaying) {
           ytPlayerRef.current.pauseVideo();
           userPausedRef.current = true;
+          pendingPlayRef.current = false;
           setIsPlaying(false);
           setShowControls(true);
           if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
         } else {
           userPausedRef.current = false;
+          pendingPlayRef.current = true;
           ytPlayerRef.current.playVideo();
           setIsPlaying(true);
           triggerRecordView();
@@ -308,7 +384,19 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           setIsPlaying(true);
           triggerRecordView();
           showControlsTemporarily();
-        }).catch(e => console.warn("Video play error:", e));
+        }).catch(e => {
+          console.warn("Video play error:", e);
+          if (videoRef.current) {
+            videoRef.current.muted = true;
+            setIsMuted(true);
+            videoRef.current.play().then(() => {
+              setIsPlaying(true);
+              triggerRecordView();
+            }).catch(err => {
+              console.warn("Video muted retry error:", err);
+            });
+          }
+        });
       } else {
         userPausedRef.current = true;
         videoRef.current.pause();
@@ -425,16 +513,19 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     }
   };
 
-  // Quality Selector Handler
+  // Quality Selector Handler (Actual quality switching for custom videos, preserving currentTime)
   const handleSelectQuality = (qualityLabel: string, targetUrl?: string) => {
     setSelectedQuality(qualityLabel);
     setShowSettingsModal(false);
     showControlsTemporarily();
 
-    if (targetUrl && videoRef.current) {
-      const savedTime = videoRef.current.currentTime;
-      const wasPlaying = !videoRef.current.paused;
+    // If it's a custom video and a real alternative resolution stream URL is selected:
+    if (targetUrl && videoRef.current && targetUrl !== videoRef.current.currentSrc) {
+      const savedTime = videoRef.current.currentTime || currentTime;
+      const wasPlaying = !videoRef.current.paused || isPlaying;
+      savedPositionOnQualityChangeRef.current = savedTime;
 
+      setIsBuffering(true);
       videoRef.current.src = targetUrl;
       videoRef.current.load();
 
@@ -442,55 +533,83 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         if (videoRef.current) {
           videoRef.current.currentTime = savedTime;
           if (wasPlaying && !userPausedRef.current) {
-            videoRef.current.play().catch(e => console.warn("Resume after quality switch:", e));
+            videoRef.current.play().then(() => {
+              setIsBuffering(false);
+              setIsPlaying(true);
+            }).catch(e => {
+              console.warn("Resume after quality switch:", e);
+              setIsBuffering(false);
+            });
+          } else {
+            setIsBuffering(false);
           }
         }
         videoRef.current?.removeEventListener("loadedmetadata", onLoaded);
       };
       videoRef.current.addEventListener("loadedmetadata", onLoaded);
-    } else if (ytId && ytPlayerRef.current) {
-      try {
-        const qualityMap: Record<string, string> = {
-          "1080p": "hd1080",
-          "720p": "hd720",
-          "480p": "large",
-          "360p": "medium",
-          "Auto": "default"
-        };
-        const ytTarget = qualityMap[qualityLabel] || "default";
-        if (typeof ytPlayerRef.current.setPlaybackQuality === "function") {
-          ytPlayerRef.current.setPlaybackQuality(ytTarget);
-        }
-      } catch (e) {
-        // ignore
-      }
     }
   };
 
-  // Fullscreen Toggle
-  const toggleFullscreen = () => {
+  // Fullscreen Toggle with landscape lock & orientation support
+  const toggleFullscreen = async () => {
     showControlsTemporarily();
     if (!containerRef.current) return;
 
-    if (!document.fullscreenElement) {
-      containerRef.current.requestFullscreen().catch(err => {
-        console.warn("Fullscreen error:", err);
-      });
-      setIsFullscreen(true);
-    } else {
-      document.exitFullscreen().catch(err => {
-        console.warn("Exit fullscreen error:", err);
-      });
-      setIsFullscreen(false);
+    try {
+      if (!document.fullscreenElement) {
+        if (containerRef.current.requestFullscreen) {
+          await containerRef.current.requestFullscreen();
+        } else if ((containerRef.current as any).webkitRequestFullscreen) {
+          await (containerRef.current as any).webkitRequestFullscreen();
+        }
+        setIsFullscreen(true);
+
+        // Hardware screen orientation lock to landscape
+        if (screen.orientation && typeof (screen.orientation as any).lock === "function") {
+          try {
+            await (screen.orientation as any).lock("landscape");
+          } catch (e) {
+            console.warn("Screen orientation lock rejected:", e);
+          }
+        }
+      } else {
+        if (document.exitFullscreen) {
+          await document.exitFullscreen();
+        } else if ((document as any).webkitExitFullscreen) {
+          await (document as any).webkitExitFullscreen();
+        }
+        setIsFullscreen(false);
+        setForceLandscape(false);
+        if (screen.orientation && typeof (screen.orientation as any).unlock === "function") {
+          try {
+            (screen.orientation as any).unlock();
+          } catch (e) {}
+        }
+      }
+    } catch (err) {
+      console.warn("Fullscreen toggle error:", err);
     }
   };
 
   useEffect(() => {
     const handleFsChange = () => {
-      setIsFullscreen(!!document.fullscreenElement);
+      const isFs = !!(document.fullscreenElement || (document as any).webkitFullscreenElement);
+      setIsFullscreen(isFs);
+      if (!isFs) {
+        setForceLandscape(false);
+        if (screen.orientation && typeof (screen.orientation as any).unlock === "function") {
+          try {
+            (screen.orientation as any).unlock();
+          } catch (e) {}
+        }
+      }
     };
     document.addEventListener("fullscreenchange", handleFsChange);
-    return () => document.removeEventListener("fullscreenchange", handleFsChange);
+    document.addEventListener("webkitfullscreenchange", handleFsChange);
+    return () => {
+      document.removeEventListener("fullscreenchange", handleFsChange);
+      document.removeEventListener("webkitfullscreenchange", handleFsChange);
+    };
   }, []);
 
   // SWIPE GESTURE DETECTORS (ONLY ON THE VIDEO SURFACE ITSELF)
@@ -520,13 +639,8 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
             onMinimize();
           }
           return;
-        } else if (deltaY < -55) {
-          // SWIPE UP: Enter Fullscreen!
-          if (!document.fullscreenElement) {
-            toggleFullscreen();
-          }
-          return;
         }
+        // SWIPE UP TO FULLSCREEN IS DISABLED per user request
       }
     }
   };
@@ -613,7 +727,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           {ytId ? (
             <div 
               ref={ytContainerRef}
-              className="absolute inset-0 w-full h-full pointer-events-none scale-105"
+              className="absolute -top-[12%] -bottom-[12%] -left-[6%] -right-[6%] w-[112%] h-[124%] pointer-events-none scale-105 overflow-hidden [&_*]:pointer-events-none"
             />
           ) : (
             <video
@@ -675,18 +789,37 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   /* ========================================================= */
   /* STANDARD / FULL VIDEO PLAYER VIEW                        */
   /* ========================================================= */
+  const isPortraitFullscreen = isFullscreen && (windowDimensions.height > windowDimensions.width || forceLandscape);
+
   return (
     <div 
       ref={containerRef}
       onMouseMove={showControlsTemporarily}
       onMouseLeave={() => isPlaying && setShowControls(false)}
+      style={
+        isPortraitFullscreen
+          ? {
+              position: "fixed",
+              top: 0,
+              left: 0,
+              width: `${windowDimensions.height}px`,
+              height: `${windowDimensions.width}px`,
+              transform: "rotate(90deg) translate(0, -100%)",
+              transformOrigin: "top left",
+              zIndex: 9999,
+              maxWidth: "none",
+              maxHeight: "none",
+              borderRadius: 0
+            }
+          : undefined
+      }
       className={`relative w-full aspect-video bg-black rounded-none md:rounded-2xl overflow-hidden shadow-2xl border-0 md:border md:border-slate-800/80 group select-none ${className}`}
     >
-      {/* 1. MEDIA EMBED - SCALED TO CLIP OUT ANY NATIVE BRANDING & WATERMARK */}
+      {/* 1. MEDIA EMBED - CROPPED TO CLIP ALL YOUTUBE CONTROLS, TITLES, BRANDING & CC */}
       {ytId ? (
         <div 
           ref={ytContainerRef}
-          className="absolute inset-0 w-full h-full pointer-events-none select-none overflow-hidden scale-[1.04] [&_iframe]:pointer-events-none [&_iframe]:w-full [&_iframe]:h-full [&_iframe]:border-0"
+          className="absolute -top-[12%] -bottom-[12%] -left-[6%] -right-[6%] w-[112%] h-[124%] pointer-events-none select-none overflow-hidden [&_*]:pointer-events-none [&_iframe]:w-full [&_iframe]:h-full [&_iframe]:border-0"
           style={{ pointerEvents: "none" }}
         />
       ) : (
@@ -696,6 +829,16 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           poster={video.thumbnailUrl}
           autoPlay={autoPlay && !userPausedRef.current}
           playsInline
+          onLoadedMetadata={() => {
+            if (savedPositionOnQualityChangeRef.current !== null && videoRef.current) {
+              const resumeTime = savedPositionOnQualityChangeRef.current;
+              savedPositionOnQualityChangeRef.current = null;
+              videoRef.current.currentTime = resumeTime;
+              if (isPlaying && !userPausedRef.current) {
+                videoRef.current.play().catch(() => {});
+              }
+            }
+          }}
           onTimeUpdate={() => {
             if (videoRef.current) {
               setCurrentTime(videoRef.current.currentTime);
@@ -715,11 +858,15 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
             setIsPlaying(false);
             if (onEnded) onEnded();
           }}
+          onError={(e) => {
+            console.warn("HTML5 video error:", e);
+            setIsBuffering(false);
+          }}
           className="w-full h-full object-contain"
         />
       )}
 
-      {/* 2. INTERACTIVE GESTURE SURFACE (HANDLES SWIPE DOWN/UP ONLY ON VIDEO!) */}
+      {/* 2. INTERACTIVE GESTURE SURFACE (HANDLES SWIPE DOWN ONLY ON VIDEO) */}
       <div 
         onClick={handleSurfaceClick}
         onTouchStart={handleTouchStart}
@@ -753,13 +900,13 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         </div>
       )}
 
-      {/* 5. TOP BAR: MINIMIZE BUTTON (WHEN CONTROLS VISIBLE) */}
+      {/* 5. TOP BAR: MINIMIZE BUTTON & SCREEN ROTATION TOGGLE (WHEN CONTROLS VISIBLE) */}
       <div 
         className={`absolute top-0 left-0 right-0 z-30 p-3 flex items-center justify-between bg-gradient-to-b from-black/80 to-transparent transition-opacity duration-300 ${
           showControls ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none"
         }`}
       >
-        {onMinimize && (
+        {onMinimize && !isFullscreen ? (
           <button
             onClick={onMinimize}
             className="p-2 rounded-full bg-black/40 hover:bg-black/70 text-white backdrop-blur-md transition-all active:scale-90"
@@ -767,8 +914,19 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           >
             <ChevronDown className="w-5 h-5" />
           </button>
+        ) : <div />}
+
+        {/* Rotate Screen Button in Fullscreen */}
+        {isFullscreen && (
+          <button
+            onClick={() => setForceLandscape(prev => !prev)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-black/50 hover:bg-black/80 text-white backdrop-blur-md border border-white/20 transition-all active:scale-90 text-xs font-medium cursor-pointer"
+            title="Rotate Screen (Landscape / Portrait)"
+          >
+            <RotateCw className="w-4 h-4 text-cyan-400" />
+            <span>{isPortraitFullscreen ? "Portrait" : "Landscape"}</span>
+          </button>
         )}
-        <div />
       </div>
 
       {/* 6. CENTER OVERLAY CLUSTER: PREVIOUS + PLAY/PAUSE + NEXT (IMMEDIATE RESPONSIVE ACTIONS) */}
@@ -847,7 +1005,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
           <div 
             onClick={(e) => e.stopPropagation()}
-            className="zync-settings-menu absolute bottom-14 right-2.5 sm:right-5 z-40 w-52 sm:w-60 bg-[#070b14]/85 backdrop-blur-xl border border-white/10 rounded-2xl shadow-[0_12px_35px_rgba(0,0,0,0.85)] p-2.5 flex flex-col gap-2 select-none animate-in fade-in zoom-in-95 duration-150"
+            className="zync-settings-menu absolute bottom-14 right-2.5 sm:right-5 z-40 w-56 sm:w-64 bg-[#070b14]/90 backdrop-blur-xl border border-white/10 rounded-2xl shadow-[0_12px_35px_rgba(0,0,0,0.85)] p-2.5 flex flex-col gap-2 select-none animate-in fade-in zoom-in-95 duration-150"
           >
             {/* Modal Header */}
             <div className="flex items-center justify-between pb-1.5 border-b border-white/10">
@@ -909,22 +1067,51 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
             {/* Sub-View: Quality Selector */}
             {settingsSubView === "quality" && (
-              <div className="flex flex-col gap-0.5 max-h-48 overflow-y-auto custom-scrollbar">
-                {["Auto", "1080p", "720p", "480p", "360p"].map((q) => {
-                  const matchedRes = availableResolutions.find(r => r.label.startsWith(q));
-                  return (
+              <div className="flex flex-col gap-1 max-h-48 overflow-y-auto custom-scrollbar">
+                {ytId ? (
+                  <div className="flex flex-col gap-2 p-1 text-xs">
+                    <div className="flex items-center justify-between px-2.5 py-2 rounded-lg bg-white/10 text-cyan-400 font-bold">
+                      <span>Auto (Adaptive HD)</span>
+                      <Check className="w-3.5 h-3.5 text-cyan-400" />
+                    </div>
+                    <p className="text-[11px] text-slate-400 px-1 leading-relaxed">
+                      YouTube dynamically optimizes video quality according to your network bandwidth.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="flex flex-col gap-0.5">
+                    {/* Auto (Original source) */}
                     <button
-                      key={q}
-                      onClick={() => handleSelectQuality(q, matchedRes?.url)}
+                      onClick={() => handleSelectQuality("Auto", rawUrl)}
                       className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs text-left transition-colors ${
-                        selectedQuality === q ? "bg-white/10 text-cyan-400 font-bold" : "text-slate-300 hover:bg-white/5"
+                        selectedQuality === "Auto" ? "bg-white/10 text-cyan-400 font-bold" : "text-slate-300 hover:bg-white/5"
                       }`}
                     >
-                      <span>{q === "Auto" ? "Auto (Adaptive HD)" : `${q} HD`}</span>
-                      {selectedQuality === q && <Check className="w-3.5 h-3.5 text-cyan-400" />}
+                      <span>Auto (Original Stream)</span>
+                      {selectedQuality === "Auto" && <Check className="w-3.5 h-3.5 text-cyan-400" />}
                     </button>
-                  );
-                })}
+
+                    {/* Actual Available Video Resolutions */}
+                    {availableResolutions.map((res) => (
+                      <button
+                        key={res.label}
+                        onClick={() => handleSelectQuality(res.label, res.url)}
+                        className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs text-left transition-colors ${
+                          selectedQuality === res.label ? "bg-white/10 text-cyan-400 font-bold" : "text-slate-300 hover:bg-white/5"
+                        }`}
+                      >
+                        <span>{res.label}</span>
+                        {selectedQuality === res.label && <Check className="w-3.5 h-3.5 text-cyan-400" />}
+                      </button>
+                    ))}
+
+                    {availableResolutions.length === 0 && (
+                      <p className="text-[11px] text-slate-400 px-2 py-1 leading-relaxed">
+                        Playing native source resolution.
+                      </p>
+                    )}
+                  </div>
+                )}
               </div>
             )}
 
@@ -1027,7 +1214,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
             </div>
           </div>
 
-          {/* Right: Settings Modal Trigger & Fullscreen */}
+          {/* Right: Settings Gear & Fullscreen */}
           <div className="flex items-center gap-1 sm:gap-2">
             {/* Settings Gear (Quality + Playback Speed popup) */}
             <button
@@ -1045,7 +1232,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
             <button
               onClick={toggleFullscreen}
               className="text-white hover:text-red-400 active:scale-95 transition-all p-1.5 rounded-lg hover:bg-white/10"
-              title={isFullscreen ? "Exit Fullscreen (f)" : "Fullscreen (f / Swipe up)"}
+              title={isFullscreen ? "Exit Fullscreen (f)" : "Fullscreen (f)"}
             >
               {isFullscreen ? (
                 <Minimize className="w-5 h-5" />

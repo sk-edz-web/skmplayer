@@ -1,7 +1,5 @@
 import React, { useState, useMemo } from "react";
 import { 
-  ThumbsUp, 
-  ThumbsDown, 
   Share2, 
   Check, 
   Search, 
@@ -21,7 +19,6 @@ interface VideoViewProps {
   currentVideo: VideoItem | null;
   onSelectVideo: (video: VideoItem | null) => void;
   onGoToMusic: () => void;
-  onLikeVideo?: (videoId: string, isCurrentlyLiked: boolean) => void;
   onRecordVideoView?: (videoId: string) => void;
 }
 
@@ -30,7 +27,6 @@ export const VideoView: React.FC<VideoViewProps> = ({
   currentVideo,
   onSelectVideo,
   onGoToMusic,
-  onLikeVideo,
   onRecordVideoView
 }) => {
   const [searchQuery, setSearchQuery] = useState("");
@@ -38,17 +34,6 @@ export const VideoView: React.FC<VideoViewProps> = ({
   const [isDescriptionExpanded, setIsDescriptionExpanded] = useState(false);
   const [isMinimized, setIsMinimized] = useState(false);
 
-  // Persistent user likes (Real data only, no fake demo data)
-  const [likedMap, setLikedMap] = useState<{ [key: string]: boolean }>(() => {
-    try {
-      const saved = localStorage.getItem("zync_liked_videos");
-      if (saved) return JSON.parse(saved);
-    } catch (e) {
-      // ignore
-    }
-    return {};
-  });
-  const [dislikedMap, setDislikedMap] = useState<{ [key: string]: boolean }>({});
   const [shareCopied, setShareCopied] = useState(false);
 
   // Extract unique categories from database videos
@@ -105,38 +90,7 @@ export const VideoView: React.FC<VideoViewProps> = ({
   };
 
   // Real-time Like interaction handler (Real database increments)
-  const handleToggleLike = (video: VideoItem) => {
-    const isCurrentlyLiked = !!likedMap[video.id];
-    const nextMap = { ...likedMap, [video.id]: !isCurrentlyLiked };
-    setLikedMap(nextMap);
-    try {
-      localStorage.setItem("zync_liked_videos", JSON.stringify(nextMap));
-    } catch (e) {
-      // ignore
-    }
-    if (dislikedMap[video.id]) {
-      setDislikedMap(prev => ({ ...prev, [video.id]: false }));
-    }
-    if (onLikeVideo) {
-      onLikeVideo(video.id, isCurrentlyLiked);
-    }
-  };
 
-  const handleToggleDislike = (videoId: string) => {
-    setDislikedMap(prev => ({ ...prev, [videoId]: !prev[videoId] }));
-    if (likedMap[videoId]) {
-      const nextMap = { ...likedMap, [videoId]: false };
-      setLikedMap(nextMap);
-      try {
-        localStorage.setItem("zync_liked_videos", JSON.stringify(nextMap));
-      } catch (e) {
-        // ignore
-      }
-      if (onLikeVideo) {
-        onLikeVideo(videoId, true);
-      }
-    }
-  };
 
   const handleShare = (video: VideoItem) => {
     const shareUrl = video.url || video.videoUrl || window.location.href;
@@ -215,29 +169,7 @@ export const VideoView: React.FC<VideoViewProps> = ({
 
                       {/* Action Buttons: Like, Dislike, Share */}
                       <div className="flex items-center gap-2">
-                        {/* Real-time Like & Dislike Group */}
-                        <div className="flex items-center bg-slate-800/90 rounded-full p-0.5 border border-slate-700/60 text-xs font-medium shadow-sm">
-                          <button
-                            onClick={() => handleToggleLike(currentVideo)}
-                            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-l-full hover:bg-slate-700/60 transition-colors cursor-pointer ${
-                              likedMap[currentVideo.id] ? "text-cyan-400 font-bold" : "text-slate-200"
-                            }`}
-                            title="Like this video"
-                          >
-                            <ThumbsUp className={`w-3.5 h-3.5 ${likedMap[currentVideo.id] ? "fill-cyan-400 text-cyan-400" : ""}`} />
-                            <span>{(Number(currentVideo.likes) || 0) + (likedMap[currentVideo.id] ? 1 : 0)}</span>
-                          </button>
-                          <div className="w-[1px] h-4 bg-slate-700" />
-                          <button
-                            onClick={() => handleToggleDislike(currentVideo.id)}
-                            className={`px-3 py-1.5 rounded-r-full hover:bg-slate-700/60 transition-colors cursor-pointer ${
-                              dislikedMap[currentVideo.id] ? "text-red-400 font-bold" : "text-slate-300"
-                            }`}
-                            title="Dislike"
-                          >
-                            <ThumbsDown className={`w-3.5 h-3.5 ${dislikedMap[currentVideo.id] ? "fill-red-400 text-red-400" : ""}`} />
-                          </button>
-                        </div>
+
 
                         {/* Share Button */}
                         <button

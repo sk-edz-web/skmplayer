@@ -83,15 +83,35 @@ export function loadYouTubeIframeApi(): Promise<any> {
   if (ytApiPromise) return ytApiPromise;
 
   ytApiPromise = new Promise((resolve) => {
+    // If YT.Player is already ready, resolve immediately
+    if ((window as any).YT && (window as any).YT.Player) {
+      resolve((window as any).YT);
+      return;
+    }
+
+    // Safety polling fallback in case onYouTubeIframeAPIReady already fired
+    let pollCount = 0;
+    const pollTimer = setInterval(() => {
+      pollCount++;
+      if ((window as any).YT && (window as any).YT.Player) {
+        clearInterval(pollTimer);
+        resolve((window as any).YT);
+      } else if (pollCount > 100) {
+        clearInterval(pollTimer);
+      }
+    }, 100);
+
     const existing = document.getElementById("youtube-iframe-api-script");
     if (!existing) {
       const tag = document.createElement("script");
       tag.id = "youtube-iframe-api-script";
       tag.src = "https://www.youtube.com/iframe_api";
+      tag.async = true;
       document.body.appendChild(tag);
     }
     const prev = (window as any).onYouTubeIframeAPIReady;
     (window as any).onYouTubeIframeAPIReady = () => {
+      clearInterval(pollTimer);
       if (typeof prev === "function") prev();
       resolve((window as any).YT);
     };

@@ -2070,9 +2070,32 @@ export default function App() {
     setActiveTab("home");
   };
 
-  // Real-time Video View Counter (Database Firestore Increment)
+  // Real-time Video View Counter: Strictly ONE unique view per user / device
   const handleRecordVideoView = async (videoId: string) => {
     try {
+      const storageKey = `zync_unique_views_${user?.uid || "guest"}`;
+      let viewedIds: string[] = [];
+      try {
+        const stored = localStorage.getItem(storageKey) || localStorage.getItem("zync_viewed_videos_list");
+        if (stored) viewedIds = JSON.parse(stored);
+      } catch (e) {
+        viewedIds = [];
+      }
+
+      // If user has ALREADY viewed this video, do NOT count again!
+      if (viewedIds.includes(videoId)) {
+        return;
+      }
+
+      // Mark this video as viewed by this user
+      viewedIds.push(videoId);
+      try {
+        localStorage.setItem(storageKey, JSON.stringify(viewedIds));
+        localStorage.setItem("zync_viewed_videos_list", JSON.stringify(viewedIds));
+      } catch (e) {
+        // ignore
+      }
+
       // Optimistic update for instant UI feedback
       setCurrentVideo(prev => prev && prev.id === videoId ? { ...prev, views: (Number(prev.views) || 0) + 1 } : prev);
       setDatabaseVideos(prev => prev.map(v => v.id === videoId ? { ...v, views: (Number(v.views) || 0) + 1 } : v));
@@ -2929,7 +2952,6 @@ export default function App() {
               currentVideo={currentVideo}
               onSelectVideo={handleSelectVideo}
               onGoToMusic={handleGoToMusic}
-              onLikeVideo={handleLikeVideo}
               onRecordVideoView={handleRecordVideoView}
             />
           )}
