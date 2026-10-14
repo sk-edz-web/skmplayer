@@ -1884,14 +1884,19 @@ export default function App() {
 
       const finalKeyCode = keyData.code || actualKeyDocId;
 
-      // Determine plan info (99 or 199) and duration (strictly 30 days)
-      const is199 = 
-        Number(keyData?.plan) === 199 || 
-        String(keyData?.plan) === "199" || 
-        String(keyData?.price) === "199" ||
-        String(keyData?.planName).includes("199") ||
-        finalKeyCode.startsWith("199") ||
-        rawInput.startsWith("199");
+      // Determine plan info (99 vs 199) strictly based on authoritative keyData
+      let is199 = false;
+      if (keyData?.plan !== undefined && keyData?.plan !== null && keyData?.plan !== "") {
+        const pNum = Number(keyData.plan);
+        is199 = pNum === 199;
+      } else if (keyData?.price !== undefined && keyData?.price !== null && keyData?.price !== 0) {
+        const prNum = Number(keyData.price);
+        is199 = prNum === 199;
+      } else if (keyData?.planName) {
+        is199 = String(keyData.planName).includes("199");
+      } else {
+        is199 = finalKeyCode.startsWith("199") || rawInput.startsWith("199");
+      }
 
       const planNumber: 99 | 199 = is199 ? 199 : 99;
       const durationDays = Number(keyData?.durationDays) || 30;
