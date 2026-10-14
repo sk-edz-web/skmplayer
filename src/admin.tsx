@@ -92,6 +92,8 @@ import { uploadToCloudinaryDirect } from "./lib/cloudinary";
 import { parseLyrics, hasLyrics, fetchLyricsFromUrl } from "./utils/lyricsParser";
 import { extractAudioFileMetadata, ExtractedAudioMetadata } from "./utils/audioMetadataParser";
 import LyricBadge from "./components/LyricBadge";
+import "./index.css";
+
 // Helper to format VIP expiration date strictly as "YYYY-MM-DD HH:mm"
 function formatVipExpireDate(timestamp: number): string {
   if (!timestamp || isNaN(timestamp) || timestamp <= 0) return "none";
