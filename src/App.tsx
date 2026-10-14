@@ -1779,62 +1779,87 @@ export default function App() {
     setProKeySuccess("");
 
     try {
-      const trimmedKey = proKeyInput.trim().toUpperCase();
-      const keyDocRef = doc(db, "keys", trimmedKey);
+      const rawInput = proKeyInput.trim().toUpperCase().replace(/\s+/g, "-");
+      const cleanAlpha = rawInput.replace(/[^A-Z0-9]/g, "");
+      const formattedKey = cleanAlpha.length === 9 
+        ? `${cleanAlpha.slice(0, 3)}-${cleanAlpha.slice(3, 6)}-${cleanAlpha.slice(6, 9)}`
+        : rawInput;
+
+      // Candidate search keys: formatted xxx-xxx-xxx, raw input, clean alphanumeric
+      const candidates = Array.from(new Set([formattedKey, rawInput, cleanAlpha].filter(Boolean)));
 
       // Auto-seed default testing keys in Firestore if needed
-      if (trimmedKey === "SARATHI-GOLD" || trimmedKey === "SARATHI-99" || trimmedKey === "SARATHI-199") {
-        const checkSnap = await getDoc(keyDocRef);
-        if (!checkSnap.exists()) {
-          const isPlan199 = trimmedKey.includes("199");
-          await setDoc(keyDocRef, {
-            code: trimmedKey,
-            plan: isPlan199 ? 199 : 99,
-            planName: isPlan199 ? "₹199 VIP Master Pass (30 Days)" : "₹99 VIP Gold Pass (30 Days)",
-            price: isPlan199 ? 199 : 99,
-            durationDays: 30,
-            status: "active",
-            used: false,
-            createdAt: Date.now()
-          });
-        }
+      if (rawInput === "SARATHI-GOLD" || rawInput === "SARATHI-99" || rawInput === "SARATHI-199") {
+        try {
+          const testDocRef = doc(db, "keys", rawInput);
+          const checkSnap = await getDoc(testDocRef);
+          if (!checkSnap.exists()) {
+            const isPlan199 = rawInput.includes("199");
+            await setDoc(testDocRef, {
+              code: rawInput,
+              plan: isPlan199 ? 199 : 99,
+              planName: isPlan199 ? "VIP Master (199)" : "₹99 Basic Plan",
+              price: isPlan199 ? 199 : 99,
+              durationDays: 30,
+              status: "active",
+              used: false,
+              createdAt: Date.now()
+            });
+          }
+        } catch {}
       }
 
       let keyData: any = null;
-      let isFromFirestore = false;
+      let actualKeyDocId = formattedKey;
 
-      try {
-        const keySnap = await getDoc(keyDocRef);
-        if (keySnap.exists()) {
-          keyData = keySnap.data();
-          isFromFirestore = true;
-        }
-      } catch (e) {
-        console.warn("Firestore key fetch notice:", e);
-      }
-
-      // Fallback: Check server API (/api/keys) if not found in Firestore or Firestore quota reached
-      if (!keyData) {
+      // 1. Search in Firestore with timeout
+      for (const cand of candidates) {
         try {
-          const res = await fetch(`/api/keys/${encodeURIComponent(trimmedKey)}`);
-          if (res.ok) {
-            const json = await res.json();
-            if (json.success && json.key) {
-              keyData = json.key;
-            }
+          const snap: any = await Promise.race([
+            getDoc(doc(db, "keys", cand)),
+            new Promise((res) => setTimeout(() => res(null), 800))
+          ]);
+          if (snap && snap.exists && snap.exists()) {
+            keyData = snap.data();
+            actualKeyDocId = cand;
+            break;
           }
         } catch (e) {
-          console.warn("Server keys API check notice:", e);
+          console.warn("Firestore key fetch notice:", e);
         }
       }
 
-      // Secondary Fallback: Check localStorage cache
+      // 2. Fallback: Check server API (/api/keys)
+      if (!keyData) {
+        for (const cand of candidates) {
+          try {
+            const res = await fetch(`/api/keys/${encodeURIComponent(cand)}`);
+            if (res.ok) {
+              const json = await res.json();
+              if (json.success && json.key) {
+                keyData = json.key;
+                actualKeyDocId = json.key.code || cand;
+                break;
+              }
+            }
+          } catch (e) {
+            console.warn("Server keys API check notice:", e);
+          }
+        }
+      }
+
+      // 3. Secondary Fallback: Check localStorage cache
       if (!keyData) {
         try {
           const cached = JSON.parse(localStorage.getItem("admin_vip_keys_cache") || "[]");
-          const found = cached.find((k: any) => String(k.code || k.id).toUpperCase() === trimmedKey);
+          const found = cached.find((k: any) => {
+            const c = String(k.code || k.id || "").toUpperCase();
+            const cleanC = c.replace(/[^A-Z0-9]/g, "");
+            return candidates.includes(c) || candidates.some(cand => cand.replace(/[^A-Z0-9]/g, "") === cleanC);
+          });
           if (found) {
             keyData = found;
+            actualKeyDocId = found.code || actualKeyDocId;
           }
         } catch (e) {}
       }
@@ -1856,6 +1881,8 @@ export default function App() {
         setProKeyLoading(false);
         return;
       }
+
+      const finalKeyCode = keyData.code || actualKeyDocId;
 
       // Determine plan info (99 or 199) and duration (strictly 30 days)
       const planNumber: 99 | 199 = Number(keyData.plan) === 199 || String(keyData.plan).includes("199") ? 199 : 99;
@@ -1883,16 +1910,20 @@ export default function App() {
 
       // 1. Update Key Status on server API
       try {
-        fetch(`/api/keys/${encodeURIComponent(trimmedKey)}`, {
+        fetch(`/api/keys/${encodeURIComponent(finalKeyCode)}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(keyUpdates)
         }).catch(() => {});
       } catch (e) {}
 
-      // 2. Update Key Status in Firestore
+      // 2. Update Key Status in Firestore (timeout protected so it never hangs)
       try {
-        await updateDoc(keyDocRef, keyUpdates);
+        const keyDocRef = doc(db, "keys", finalKeyCode);
+        await Promise.race([
+          setDoc(keyDocRef, { ...keyData, ...keyUpdates }, { merge: true }),
+          new Promise((resolve) => setTimeout(resolve, 800))
+        ]);
       } catch (e) {
         console.warn("Firestore key update notice:", e);
       }
@@ -1904,7 +1935,7 @@ export default function App() {
         email: user.email || "",
         displayName: user.displayName || user.email?.split("@")[0] || "User Name",
         vip: true,
-        vipkey: trimmedKey,
+        vipkey: finalKeyCode,
         expire: expireStr,
         vipExpiresAt: calculatedExpiresAt,
         plan: planTitle,
@@ -1913,17 +1944,20 @@ export default function App() {
 
       try {
         const userDocRef = doc(db, "users", user.uid);
-        await setDoc(userDocRef, {
-          ...userPayload,
-          // Compatibility properties
-          isPro: true,
-          proKey: trimmedKey,
-          proActivatedAt: now,
-          proExpiresAt: calculatedExpiresAt,
-          planName: planTitle,
-          tier: planNumber === 199 ? "master" : "gold",
-          keyStatus: "active"
-        }, { merge: true });
+        await Promise.race([
+          setDoc(userDocRef, {
+            ...userPayload,
+            // Compatibility properties
+            isPro: true,
+            proKey: finalKeyCode,
+            proActivatedAt: now,
+            proExpiresAt: calculatedExpiresAt,
+            planName: planTitle,
+            tier: planNumber === 199 ? "master" : "gold",
+            keyStatus: "active"
+          }, { merge: true }),
+          new Promise((resolve) => setTimeout(resolve, 800))
+        ]);
       } catch (e) {
         console.warn("Firestore user update notice:", e);
       }
@@ -1937,7 +1971,7 @@ export default function App() {
         }),
         ...userPayload,
         isPro: true,
-        proKey: trimmedKey,
+        proKey: finalKeyCode,
         proExpiresAt: calculatedExpiresAt,
         keyStatus: "active"
       }));
@@ -3965,7 +3999,7 @@ export default function App() {
                                   <Key className="w-3.5 h-3.5 text-slate-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
                                   <input 
                                     type="text" 
-                                    placeholder="Enter VIP key (e.g. SARATHI-GOLD)" 
+                                    placeholder="Enter VIP key (e.g. XXX-XXX-XXX)" 
                                     value={proKeyInput}
                                     onChange={(e) => setProKeyInput(e.target.value.toUpperCase())}
                                     className="w-full pl-9 pr-3 py-2 bg-black/40 border border-white/10 hover:border-amber-500/20 focus:border-amber-400/50 rounded-xl text-slate-200 outline-none text-xs font-mono tracking-wider transition-all"

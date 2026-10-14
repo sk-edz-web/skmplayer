@@ -1166,8 +1166,8 @@ function AdminApp() {
         }
         return str;
       };
-      // Generate key in VIP-99-XXXXXX format (e.g. VIP-99-A7X92B or VIP-199-A7X92B)
-      const newKeyCode = `VIP-${selectedPlan}-${r(6)}`;
+      // Generate key strictly in xxx-xxx-xxx format (e.g. A7X-92B-K4P)
+      const newKeyCode = `${r(3)}-${r(3)}-${r(3)}`;
       
       // All keys have strictly 30 days validity that starts upon user activation (not creation date)
       const durationDays = 30;
@@ -1214,10 +1214,13 @@ function AdminApp() {
         }).catch(e => console.warn("Server API write notice:", e));
       } catch (e) {}
 
-      // 4. Persist to Firebase Firestore (resilient to quota or connection limits)
+      // 4. Persist to Firebase Firestore (non-blocking with timeout so the button never stays loading)
       try {
         const keyDocRef = doc(db, "keys", newKeyCode);
-        await setDoc(keyDocRef, newKeyData);
+        await Promise.race([
+          setDoc(keyDocRef, newKeyData),
+          new Promise((resolve) => setTimeout(resolve, 600))
+        ]);
       } catch (firestoreErr: any) {
         console.warn("Firestore write notice (saved locally and to server):", firestoreErr?.message || firestoreErr);
       }
@@ -1280,26 +1283,35 @@ function AdminApp() {
         }).catch(() => {});
       } catch {}
 
-      // 4. Update in Firestore with try/catch
+      // 4. Update in Firestore with try/catch and timeout
       try {
         const keyDocRef = doc(db, "keys", keyId);
-        const keySnap = await getDoc(keyDocRef);
-        const keyData = keySnap.exists() ? keySnap.data() : null;
-        await updateDoc(keyDocRef, updates);
+        const keySnap: any = await Promise.race([
+          getDoc(keyDocRef),
+          new Promise((resolve) => setTimeout(() => resolve(null), 800))
+        ]);
+        const keyData = keySnap && keySnap.exists && keySnap.exists() ? keySnap.data() : null;
+        await Promise.race([
+          setDoc(keyDocRef, updates, { merge: true }),
+          new Promise((resolve) => setTimeout(resolve, 800))
+        ]);
 
         if (keyData?.userId) {
           try {
             const linkedUserRef = doc(db, "users", keyData.userId);
-            await updateDoc(linkedUserRef, {
-              vip: false,
-              vipkey: "none",
-              expire: "none",
-              vipExpiresAt: 0,
-              plan: "none",
-              isPro: false,
-              keyStatus: isUsed || currentStatus === "disabled" ? "reset" : "disabled",
-              updatedAt: Date.now()
-            });
+            await Promise.race([
+              updateDoc(linkedUserRef, {
+                vip: false,
+                vipkey: "none",
+                expire: "none",
+                vipExpiresAt: 0,
+                plan: "none",
+                isPro: false,
+                keyStatus: isUsed || currentStatus === "disabled" ? "reset" : "disabled",
+                updatedAt: Date.now()
+              }),
+              new Promise((resolve) => setTimeout(resolve, 800))
+            ]);
           } catch (e) {
             console.warn("Could not update linked user profile:", e);
           }

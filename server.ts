@@ -286,8 +286,12 @@ async function startServer() {
   app.get("/api/keys/:code", (req, res) => {
     try {
       const code = String(req.params.code).trim().toUpperCase();
+      const cleanCode = code.replace(/[^A-Z0-9]/g, "");
       const keys = readStoredKeys();
-      const key = keys.find((k: any) => String(k.code).toUpperCase() === code);
+      const key = keys.find((k: any) => {
+        const c = String(k.code || "").toUpperCase();
+        return c === code || (cleanCode.length > 0 && c.replace(/[^A-Z0-9]/g, "") === cleanCode);
+      });
       if (!key) {
         return res.status(404).json({ success: false, message: "Key not found" });
       }
@@ -322,9 +326,13 @@ async function startServer() {
   app.put("/api/keys/:code", (req, res) => {
     try {
       const code = String(req.params.code).trim().toUpperCase();
+      const cleanCode = code.replace(/[^A-Z0-9]/g, "");
       const updates = req.body;
       const keys = readStoredKeys();
-      const existingIdx = keys.findIndex((k: any) => String(k.code).toUpperCase() === code);
+      const existingIdx = keys.findIndex((k: any) => {
+        const c = String(k.code || "").toUpperCase();
+        return c === code || (cleanCode.length > 0 && c.replace(/[^A-Z0-9]/g, "") === cleanCode);
+      });
       if (existingIdx >= 0) {
         keys[existingIdx] = { ...keys[existingIdx], ...updates };
         writeStoredKeys(keys);
@@ -340,8 +348,12 @@ async function startServer() {
   app.delete("/api/keys/:code", (req, res) => {
     try {
       const code = String(req.params.code).trim().toUpperCase();
+      const cleanCode = code.replace(/[^A-Z0-9]/g, "");
       let keys = readStoredKeys();
-      keys = keys.filter((k: any) => String(k.code).toUpperCase() !== code);
+      keys = keys.filter((k: any) => {
+        const c = String(k.code || "").toUpperCase();
+        return c !== code && (cleanCode.length === 0 || c.replace(/[^A-Z0-9]/g, "") !== cleanCode);
+      });
       writeStoredKeys(keys);
       res.json({ success: true, message: "Key deleted" });
     } catch (err: any) {
