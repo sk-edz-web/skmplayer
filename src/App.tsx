@@ -1932,13 +1932,10 @@ export default function App() {
         }).catch(() => {});
       } catch (e) {}
 
-      // 2. Update Key Status in Firestore (timeout protected so it never hangs)
+      // 2. Update Key Status in Firestore directly
       try {
         const keyDocRef = doc(db, "keys", finalKeyCode);
-        await Promise.race([
-          setDoc(keyDocRef, { ...keyData, ...keyUpdates }, { merge: true }),
-          new Promise((resolve) => setTimeout(resolve, 800))
-        ]);
+        await setDoc(keyDocRef, { ...keyData, ...keyUpdates }, { merge: true });
       } catch (e) {
         console.warn("Firestore key update notice:", e);
       }
@@ -1959,20 +1956,17 @@ export default function App() {
 
       try {
         const userDocRef = doc(db, "users", user.uid);
-        await Promise.race([
-          setDoc(userDocRef, {
-            ...userPayload,
-            // Compatibility properties
-            isPro: true,
-            proKey: finalKeyCode,
-            proActivatedAt: now,
-            proExpiresAt: calculatedExpiresAt,
-            planName: planTitle,
-            tier: is199 ? "master" : "gold",
-            keyStatus: "active"
-          }, { merge: true }),
-          new Promise((resolve) => setTimeout(resolve, 800))
-        ]);
+        await setDoc(userDocRef, {
+          ...userPayload,
+          // Compatibility properties
+          isPro: true,
+          proKey: finalKeyCode,
+          proActivatedAt: now,
+          proExpiresAt: calculatedExpiresAt,
+          planName: planTitle,
+          tier: is199 ? "master" : "gold",
+          keyStatus: "active"
+        }, { merge: true });
       } catch (e) {
         console.warn("Firestore user update notice:", e);
       }

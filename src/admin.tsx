@@ -80,7 +80,7 @@ import {
   ListMusic,
   Film
 } from "lucide-react";
-import { Song, Playlist, ReportItem, ReportStatus, AppNotification, SubscriptionKey, ArtistProfile } from "./types";
+import { Song, Playlist, ReportItem, ReportStatus, AppNotification, SubscriptionKey, ArtistProfile, UserProfile } from "./types";
 import AdminReportsManager from "./components/AdminReportsManager";
 import AdminArtistsManager from "./components/AdminArtistsManager";
 import AdminCloudinaryManager from "./components/AdminCloudinaryManager";
@@ -92,7 +92,17 @@ import { uploadToCloudinaryDirect } from "./lib/cloudinary";
 import { parseLyrics, hasLyrics, fetchLyricsFromUrl } from "./utils/lyricsParser";
 import { extractAudioFileMetadata, ExtractedAudioMetadata } from "./utils/audioMetadataParser";
 import LyricBadge from "./components/LyricBadge";
-import "./index.css";
+// Helper to format VIP expiration date strictly as "YYYY-MM-DD HH:mm"
+function formatVipExpireDate(timestamp: number): string {
+  if (!timestamp || isNaN(timestamp) || timestamp <= 0) return "none";
+  const d = new Date(timestamp);
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  const hours = String(d.getHours()).padStart(2, "0");
+  const mins = String(d.getMinutes()).padStart(2, "0");
+  return `${year}-${month}-${day} ${hours}:${mins}`;
+}
 
 function AdminApp() {
   // Admin Authentication Gate State
@@ -105,7 +115,13 @@ function AdminApp() {
   const [isLoggingIn, setIsLoggingIn] = useState<boolean>(false);
 
   // Tab State
-  const [activeTab, setActiveTab] = useState<"songs" | "videos" | "batch" | "duplicates" | "playlists" | "artists" | "keys" | "cloudinary" | "reports" | "updates">("songs");
+  const [activeTab, setActiveTab] = useState<"songs" | "videos" | "batch" | "duplicates" | "playlists" | "artists" | "keys" | "users" | "cloudinary" | "reports" | "updates">("songs");
+
+  // Users Directory Management State (Real Firestore users collection)
+  const [usersList, setUsersList] = useState<UserProfile[]>([]);
+  const [loadingUsers, setLoadingUsers] = useState<boolean>(true);
+  const [userSearchTerm, setUserSearchTerm] = useState<string>("");
+  const [userFilterRole, setUserFilterRole] = useState<"all" | "vip" | "free">("all");
   // Find Duplicate Songs State
   const [showDuplicatesOnly, setShowDuplicatesOnly] = useState<boolean>(false);
   const [duplicateSearchTerm, setDuplicateSearchTerm] = useState<string>("");
@@ -1154,6 +1170,81 @@ function AdminApp() {
     return () => unsubscribe();
   }, []);
 
+  // Real-time Users Collection Subscription from Firestore "users" collection
+  useEffect(() => {
+    setLoadingUsers(true);
+    const q = query(collection(db, "users"), orderBy("createdAt", "desc"));
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        const list: UserProfile[] = [];
+        snapshot.forEach((d) => {
+          list.push({ uid: d.id, ...d.data() } as UserProfile);
+        });
+        setUsersList(list);
+        setLoadingUsers(false);
+      },
+      (err) => {
+        console.warn("Ordered users query notice, trying unordered listener:", err);
+        const fallbackUnsub = onSnapshot(collection(db, "users"), (snap) => {
+          const list: UserProfile[] = [];
+          snap.forEach((d) => {
+            list.push({ uid: d.id, ...d.data() } as UserProfile);
+          });
+          list.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+          setUsersList(list);
+          setLoadingUsers(false);
+        });
+        return () => fallbackUnsub();
+      }
+    );
+
+    return () => unsubscribe();
+  }, []);
+
+  // Handler to Toggle / Grant VIP status directly in Firestore users collection
+  const handleToggleUserVip = async (targetUser: UserProfile) => {
+    try {
+      const isCurrentlyVip = Boolean(targetUser.vip || targetUser.isPro);
+      const userRef = doc(db, "users", targetUser.uid);
+      const now = Date.now();
+
+      if (isCurrentlyVip) {
+        // Revoke VIP
+        await updateDoc(userRef, {
+          vip: false,
+          vipkey: "none",
+          expire: "none",
+          vipExpiresAt: 0,
+          plan: "none",
+          isPro: false,
+          keyStatus: "revoked_by_admin",
+          updatedAt: now
+        });
+        showAdminToast(`VIP revoked for user ${targetUser.email || targetUser.displayName || targetUser.uid}`, "info");
+      } else {
+        // Grant Direct Admin VIP
+        const durationDays = 30;
+        const calculatedExpiresAt = now + durationDays * 24 * 60 * 60 * 1000;
+        const expireStr = formatVipExpireDate(calculatedExpiresAt);
+        await updateDoc(userRef, {
+          vip: true,
+          vipkey: "ADMIN_GRANTED",
+          expire: expireStr,
+          vipExpiresAt: calculatedExpiresAt,
+          plan: "VIP Master (199)",
+          isPro: true,
+          keyStatus: "active",
+          updatedAt: now
+        });
+        showAdminToast(`30-Day VIP Master granted to ${targetUser.email || targetUser.displayName || targetUser.uid}! 👑`, "success");
+      }
+    } catch (err: any) {
+      console.error("Failed to toggle user VIP status:", err);
+      showAdminToast(`Failed to update user: ${err.message}`, "error");
+    }
+  };
+
   // Admin key generation handler (Supports ₹99 and ₹199 plans with custom notes)
   const handleGenerateVipKey = async () => {
     setGeneratingKey(true);
@@ -1214,15 +1305,13 @@ function AdminApp() {
         }).catch(e => console.warn("Server API write notice:", e));
       } catch (e) {}
 
-      // 4. Persist to Firebase Firestore (non-blocking with timeout so the button never stays loading)
+      // 4. Persist directly to Firebase Firestore "keys" collection
       try {
         const keyDocRef = doc(db, "keys", newKeyCode);
-        await Promise.race([
-          setDoc(keyDocRef, newKeyData),
-          new Promise((resolve) => setTimeout(resolve, 600))
-        ]);
+        await setDoc(keyDocRef, newKeyData);
+        console.log(`[Admin] Key ${newKeyCode} persisted directly to Firestore "keys" collection.`);
       } catch (firestoreErr: any) {
-        console.warn("Firestore write notice (saved locally and to server):", firestoreErr?.message || firestoreErr);
+        console.warn("Firestore keys setDoc notice:", firestoreErr?.message || firestoreErr);
       }
 
       setCustomKeyNote("");
@@ -1283,35 +1372,26 @@ function AdminApp() {
         }).catch(() => {});
       } catch {}
 
-      // 4. Update in Firestore with try/catch and timeout
+      // 4. Update directly in Firestore
       try {
         const keyDocRef = doc(db, "keys", keyId);
-        const keySnap: any = await Promise.race([
-          getDoc(keyDocRef),
-          new Promise((resolve) => setTimeout(() => resolve(null), 800))
-        ]);
+        const keySnap: any = await getDoc(keyDocRef);
         const keyData = keySnap && keySnap.exists && keySnap.exists() ? keySnap.data() : null;
-        await Promise.race([
-          setDoc(keyDocRef, updates, { merge: true }),
-          new Promise((resolve) => setTimeout(resolve, 800))
-        ]);
+        await setDoc(keyDocRef, updates, { merge: true });
 
         if (keyData?.userId) {
           try {
             const linkedUserRef = doc(db, "users", keyData.userId);
-            await Promise.race([
-              updateDoc(linkedUserRef, {
-                vip: false,
-                vipkey: "none",
-                expire: "none",
-                vipExpiresAt: 0,
-                plan: "none",
-                isPro: false,
-                keyStatus: isUsed || currentStatus === "disabled" ? "reset" : "disabled",
-                updatedAt: Date.now()
-              }),
-              new Promise((resolve) => setTimeout(resolve, 800))
-            ]);
+            await updateDoc(linkedUserRef, {
+              vip: false,
+              vipkey: "none",
+              expire: "none",
+              vipExpiresAt: 0,
+              plan: "none",
+              isPro: false,
+              keyStatus: isUsed || currentStatus === "disabled" ? "reset" : "disabled",
+              updatedAt: Date.now()
+            });
           } catch (e) {
             console.warn("Could not update linked user profile:", e);
           }
@@ -1909,6 +1989,24 @@ function AdminApp() {
               activeTab === "keys" ? "bg-black/20 text-black" : "bg-amber-500/20 text-amber-300"
             }`}>
               {keysList.length}
+            </span>
+          </button>
+
+          {/* Real Registered Users Directory Tab Button */}
+          <button
+            onClick={() => setActiveTab("users")}
+            className={`flex items-center space-x-2 px-6 py-2.5 rounded-xl font-bold text-xs transition-all duration-300 ${
+              activeTab === "users"
+                ? "bg-gradient-to-r from-cyan-500 via-teal-500 to-blue-600 text-white shadow-lg shadow-cyan-500/25"
+                : "text-slate-400 hover:text-slate-200 hover:bg-white/5"
+            }`}
+          >
+            <UserCheck className="w-4 h-4 text-cyan-300" />
+            <span>Users Directory</span>
+            <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded-md font-bold ml-1 ${
+              activeTab === "users" ? "bg-black/20 text-white" : "bg-cyan-500/20 text-cyan-300"
+            }`}>
+              {usersList.length}
             </span>
           </button>
 
@@ -3866,6 +3964,208 @@ function AdminApp() {
                 </div>
               )}
             </div>
+          </div>
+        )}
+
+        {/* Tab: Real Registered Users Directory */}
+        {activeTab === "users" && (
+          <div className="bg-white/5 border border-white/10 rounded-3xl p-6 backdrop-blur-xl shadow-2xl space-y-6 animate-fade-in">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-white/10">
+              <div>
+                <h2 className="text-xl font-bold text-slate-100 flex items-center space-x-2">
+                  <UserCheck className="w-6 h-6 text-cyan-400" />
+                  <span>Registered Users Directory ({usersList.length})</span>
+                </h2>
+                <p className="text-xs text-slate-400 mt-1">
+                  All real user profiles directly from Firestore <code className="text-cyan-300 font-mono bg-cyan-500/10 px-1.5 py-0.5 rounded border border-cyan-500/20">users</code> collection
+                </p>
+              </div>
+
+              {/* Filter Pills */}
+              <div className="flex items-center space-x-1.5 p-1 bg-black/40 rounded-xl border border-white/10 self-start sm:self-auto">
+                <button
+                  type="button"
+                  onClick={() => setUserFilterRole("all")}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                    userFilterRole === "all" ? "bg-cyan-500/20 text-cyan-300 border border-cyan-500/30" : "text-slate-400 hover:text-white"
+                  }`}
+                >
+                  All Users ({usersList.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setUserFilterRole("vip")}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                    userFilterRole === "vip" ? "bg-amber-500/20 text-amber-300 border border-amber-500/30" : "text-slate-400 hover:text-white"
+                  }`}
+                >
+                  👑 VIP Members ({usersList.filter(u => u.vip || u.isPro).length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setUserFilterRole("free")}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                    userFilterRole === "free" ? "bg-slate-500/20 text-slate-300 border border-slate-500/30" : "text-slate-400 hover:text-white"
+                  }`}
+                >
+                  Free Members ({usersList.filter(u => !(u.vip || u.isPro)).length})
+                </button>
+              </div>
+            </div>
+
+            {/* Search Input Bar */}
+            <div className="relative">
+              <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+              <input
+                type="text"
+                placeholder="Search registered users by email address, name, UID, plan, or key..."
+                value={userSearchTerm}
+                onChange={(e) => setUserSearchTerm(e.target.value)}
+                className="w-full pl-10 pr-10 py-3 bg-black/40 border border-white/10 focus:border-cyan-400/60 rounded-2xl text-slate-100 placeholder-slate-500 text-xs outline-none transition-all"
+              />
+              {userSearchTerm && (
+                <button
+                  type="button"
+                  onClick={() => setUserSearchTerm("")}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white text-xs px-2 py-0.5"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+
+            {/* Users List */}
+            {loadingUsers ? (
+              <div className="flex flex-col items-center justify-center py-16">
+                <Loader2 className="w-8 h-8 text-cyan-400 animate-spin mb-3" />
+                <p className="text-xs font-mono text-slate-400">Loading real user database from Firestore...</p>
+              </div>
+            ) : usersList.length === 0 ? (
+              <div className="text-center py-16 border border-dashed border-white/10 rounded-2xl bg-white/5">
+                <UserIcon className="w-10 h-10 text-slate-600 mx-auto mb-2" />
+                <h3 className="text-sm font-bold text-slate-300">No users found in database</h3>
+                <p className="text-xs text-slate-400 mt-1">Users will appear here as soon as they sign up on ZYNC.</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-h-[650px] overflow-y-auto pr-2 custom-scrollbar">
+                {usersList
+                  .filter((u) => {
+                    const isVip = Boolean(u.vip || u.isPro);
+                    if (userFilterRole === "vip" && !isVip) return false;
+                    if (userFilterRole === "free" && isVip) return false;
+
+                    const term = userSearchTerm.trim().toLowerCase();
+                    if (!term) return true;
+
+                    return (
+                      (u.email || "").toLowerCase().includes(term) ||
+                      (u.displayName || "").toLowerCase().includes(term) ||
+                      (u.uid || "").toLowerCase().includes(term) ||
+                      (u.vipkey || u.proKey || "").toLowerCase().includes(term) ||
+                      (String(u.plan || "")).toLowerCase().includes(term)
+                    );
+                  })
+                  .map((u) => {
+                    const isVip = Boolean(u.vip || u.isPro);
+                    return (
+                      <div
+                        key={u.uid}
+                        className={`p-4 rounded-2xl border transition-all duration-300 flex flex-col justify-between space-y-3 ${
+                          isVip
+                            ? "bg-amber-500/5 border-amber-500/25 hover:border-amber-400/50"
+                            : "bg-white/[0.02] border-white/10 hover:border-white/20"
+                        }`}
+                      >
+                        <div className="flex items-start space-x-3">
+                          <img
+                            src={u.photoURL || `https://api.dicebear.com/7.x/bottts/svg?seed=${u.uid}`}
+                            alt={u.displayName || "User Avatar"}
+                            className="w-12 h-12 rounded-xl object-cover border border-white/15 bg-black/40 flex-shrink-0"
+                            referrerPolicy="no-referrer"
+                          />
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center justify-between gap-2">
+                              <h4 className="text-sm font-bold text-white truncate">
+                                {u.displayName || u.email?.split("@")[0] || "ZYNC User"}
+                              </h4>
+                              {isVip ? (
+                                <span className="px-2.5 py-0.5 rounded-full bg-amber-500/20 border border-amber-400/40 text-amber-300 text-[10px] font-mono font-bold flex items-center space-x-1 flex-shrink-0">
+                                  <Crown className="w-3 h-3 text-amber-400" />
+                                  <span>{u.plan || "VIP Active"}</span>
+                                </span>
+                              ) : (
+                                <span className="px-2 py-0.5 rounded-md bg-slate-500/10 border border-slate-500/20 text-slate-400 text-[10px] font-mono font-semibold flex-shrink-0">
+                                  Free User
+                                </span>
+                              )}
+                            </div>
+
+                            {/* USER EMAIL ADDRESS - CLEARLY HIGHLIGHTED */}
+                            <div className="flex items-center space-x-1.5 mt-1.5 bg-cyan-500/10 border border-cyan-500/20 px-2.5 py-1 rounded-lg inline-flex max-w-full">
+                              <Mail className="w-3.5 h-3.5 text-cyan-400 flex-shrink-0" />
+                              <span className="text-xs font-mono font-bold text-cyan-300 truncate select-all">
+                                {u.email || "No Email Registered"}
+                              </span>
+                            </div>
+
+                            <p className="text-[10px] font-mono text-slate-400 mt-1.5 truncate">
+                              UID: <span className="text-slate-300">{u.uid}</span>
+                            </p>
+                          </div>
+                        </div>
+
+                        {/* VIP Details if active */}
+                        {isVip && (
+                          <div className="p-2.5 bg-amber-500/10 border border-amber-500/20 rounded-xl space-y-1 text-[11px] font-mono text-slate-300">
+                            <p className="flex justify-between">
+                              <span className="text-slate-400">Activated Key:</span>
+                              <span className="text-amber-300 font-bold select-all">{u.vipkey || u.proKey || "Direct Admin"}</span>
+                            </p>
+                            <p className="flex justify-between">
+                              <span className="text-slate-400">Expires:</span>
+                              <span className="text-amber-300 font-bold">{u.expire || u.proExpiresAtFormatted || (u.vipExpiresAt ? new Date(u.vipExpiresAt).toLocaleString() : "Never")}</span>
+                            </p>
+                          </div>
+                        )}
+
+                        {/* Card Footer Actions */}
+                        <div className="flex items-center justify-between pt-2 border-t border-white/5 text-[10px] font-mono text-slate-400">
+                          <span>Joined: {u.createdAt ? new Date(u.createdAt).toLocaleDateString() : "Unknown"}</span>
+
+                          <div className="flex items-center space-x-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (u.email) {
+                                  navigator.clipboard.writeText(u.email);
+                                  showAdminToast(`Copied email "${u.email}"! 📋`, "info");
+                                }
+                              }}
+                              className="px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/10 text-slate-300 hover:text-white border border-white/10 transition-colors flex items-center space-x-1"
+                              title="Copy Email Address"
+                            >
+                              <Copy className="w-3 h-3" />
+                              <span>Copy Email</span>
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => handleToggleUserVip(u)}
+                              className={`px-2.5 py-1 rounded-lg font-bold border transition-colors ${
+                                isVip
+                                  ? "bg-red-500/15 hover:bg-red-500/25 border-red-500/30 text-red-300"
+                                  : "bg-amber-500/15 hover:bg-amber-500/25 border-amber-500/30 text-amber-300"
+                              }`}
+                            >
+                              {isVip ? "Revoke VIP" : "Grant VIP"}
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+              </div>
+            )}
           </div>
         )}
 
