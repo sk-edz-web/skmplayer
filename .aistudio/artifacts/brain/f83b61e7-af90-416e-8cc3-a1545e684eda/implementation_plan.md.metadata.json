@@ -1,6 +1,6 @@
 {
-  "summary": "Implementation plan for VIP key activation lifecycle and user schema synchronization:\n- Admin VIP keys begin their 30-day validity upon user activation rather than generation date.\n- User profile documents in Firestore will strictly adhere to the requested schema with vip, vipkey, expire, vipExpiresAt, plan, and updatedAt.\n- On user login, the web app will auto-initialize or sync this exact schema and validate expiration.",
-  "updatedAt": "2026-10-14T10:17:57.843221334Z",
+  "summary": "Implementation plan for fixing user listing, key generation loading state, and Firestore key schema alignment in ZYNC Admin Console.",
+  "updatedAt": "2026-10-14T13:18:14.727766565Z",
   "requestFeedback": true,
   "userFacing": true
 }

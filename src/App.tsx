@@ -1912,6 +1912,8 @@ export default function App() {
       const keyUpdates = {
         status: "used" as const,
         used: true,
+        user: user.email || user.uid,
+        expire: expireStr,
         usedBy: user.email || user.uid,
         userId: user.uid,
         activatedBy: user.email || user.uid,

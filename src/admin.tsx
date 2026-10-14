@@ -1175,29 +1175,20 @@ function AdminApp() {
   // Real-time Users Collection Subscription from Firestore "users" collection
   useEffect(() => {
     setLoadingUsers(true);
-    const q = query(collection(db, "users"), orderBy("createdAt", "desc"));
     const unsubscribe = onSnapshot(
-      q,
+      collection(db, "users"),
       (snapshot) => {
         const list: UserProfile[] = [];
         snapshot.forEach((d) => {
           list.push({ uid: d.id, ...d.data() } as UserProfile);
         });
+        list.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
         setUsersList(list);
         setLoadingUsers(false);
       },
       (err) => {
-        console.warn("Ordered users query notice, trying unordered listener:", err);
-        const fallbackUnsub = onSnapshot(collection(db, "users"), (snap) => {
-          const list: UserProfile[] = [];
-          snap.forEach((d) => {
-            list.push({ uid: d.id, ...d.data() } as UserProfile);
-          });
-          list.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-          setUsersList(list);
-          setLoadingUsers(false);
-        });
-        return () => fallbackUnsub();
+        console.warn("Users collection subscription notice:", err);
+        setLoadingUsers(false);
       }
     );
 
@@ -1278,6 +1269,8 @@ function AdminApp() {
         createdAt: now,
         status: "active",
         used: false,
+        user: "none",
+        expire: "none",
         usedBy: "",
         usedAt: 0,
         activatedAt: 0,

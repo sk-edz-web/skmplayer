@@ -72,6 +72,8 @@ export interface SubscriptionKey {
   durationDays: number;
   note?: string;
   used: boolean;
+  user?: string;
+  expire?: string;
   usedBy?: string;
   userId?: string;
   activatedBy?: string;
