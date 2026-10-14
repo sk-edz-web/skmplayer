@@ -244,6 +244,111 @@ async function startServer() {
     }
   });
 
+  // VIP Keys Persistence Helper Functions
+  const KEYS_FILE_PATH = path.join(process.cwd(), "data", "keys.json");
+
+  function readStoredKeys(): any[] {
+    try {
+      if (!fs.existsSync(KEYS_FILE_PATH)) {
+        return [];
+      }
+      const data = fs.readFileSync(KEYS_FILE_PATH, "utf-8");
+      return JSON.parse(data) || [];
+    } catch (err) {
+      console.warn("[Keys API] Error reading keys file:", err);
+      return [];
+    }
+  }
+
+  function writeStoredKeys(keys: any[]): void {
+    try {
+      const dataDir = path.dirname(KEYS_FILE_PATH);
+      if (!fs.existsSync(dataDir)) {
+        fs.mkdirSync(dataDir, { recursive: true });
+      }
+      fs.writeFileSync(KEYS_FILE_PATH, JSON.stringify(keys, null, 2), "utf-8");
+    } catch (err) {
+      console.warn("[Keys API] Error writing keys file:", err);
+    }
+  }
+
+  // GET /api/keys - Retrieve all subscription passcodes
+  app.get("/api/keys", (req, res) => {
+    try {
+      const keys = readStoredKeys();
+      res.json({ success: true, keys });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err?.message || "Failed to read keys" });
+    }
+  });
+
+  // GET /api/keys/:code - Check single passcode
+  app.get("/api/keys/:code", (req, res) => {
+    try {
+      const code = String(req.params.code).trim().toUpperCase();
+      const keys = readStoredKeys();
+      const key = keys.find((k: any) => String(k.code).toUpperCase() === code);
+      if (!key) {
+        return res.status(404).json({ success: false, message: "Key not found" });
+      }
+      res.json({ success: true, key });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err?.message || "Failed to fetch key" });
+    }
+  });
+
+  // POST /api/keys - Store/Create passcode
+  app.post("/api/keys", (req, res) => {
+    try {
+      const keyData = req.body;
+      if (!keyData || !keyData.code) {
+        return res.status(400).json({ success: false, message: "Key code is required" });
+      }
+      const keys = readStoredKeys();
+      const existingIdx = keys.findIndex((k: any) => k.code === keyData.code);
+      if (existingIdx >= 0) {
+        keys[existingIdx] = { ...keys[existingIdx], ...keyData };
+      } else {
+        keys.unshift(keyData);
+      }
+      writeStoredKeys(keys);
+      res.json({ success: true, key: keyData });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err?.message || "Failed to save key" });
+    }
+  });
+
+  // PUT /api/keys/:code - Update passcode (e.g. used, reset, disabled)
+  app.put("/api/keys/:code", (req, res) => {
+    try {
+      const code = String(req.params.code).trim().toUpperCase();
+      const updates = req.body;
+      const keys = readStoredKeys();
+      const existingIdx = keys.findIndex((k: any) => String(k.code).toUpperCase() === code);
+      if (existingIdx >= 0) {
+        keys[existingIdx] = { ...keys[existingIdx], ...updates };
+        writeStoredKeys(keys);
+        return res.json({ success: true, key: keys[existingIdx] });
+      }
+      res.status(404).json({ success: false, message: "Key not found" });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err?.message || "Failed to update key" });
+    }
+  });
+
+  // DELETE /api/keys/:code - Delete passcode
+  app.delete("/api/keys/:code", (req, res) => {
+    try {
+      const code = String(req.params.code).trim().toUpperCase();
+      let keys = readStoredKeys();
+      keys = keys.filter((k: any) => String(k.code).toUpperCase() !== code);
+      writeStoredKeys(keys);
+      res.json({ success: true, message: "Key deleted" });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err?.message || "Failed to delete key" });
+    }
+  });
+
   // Video Metadata & Accurate Duration Auto-Detection Route
   app.get("/api/video-info", async (req, res) => {
     try {

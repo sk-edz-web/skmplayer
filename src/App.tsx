@@ -206,6 +206,18 @@ function getSongStreamUrl(song: Song | null): string {
   return song.audioUrl || "";
 }
 
+// Helper to format VIP expiration date strictly as "YYYY-MM-DD HH:mm" (e.g. "2026-11-13 14:30")
+function formatVipExpireDate(timestamp: number): string {
+  if (!timestamp || isNaN(timestamp) || timestamp <= 0) return "none";
+  const d = new Date(timestamp);
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  const hours = String(d.getHours()).padStart(2, "0");
+  const mins = String(d.getMinutes()).padStart(2, "0");
+  return `${year}-${month}-${day} ${hours}:${mins}`;
+}
+
 export default function App() {
   // Navigation & View States
   const [activeTab, setActiveTab] = useState<"home" | "search" | "videos" | "playlist" | "account" | "local">("home");
@@ -231,7 +243,11 @@ export default function App() {
   const [isUpgradePopupOpen, setIsUpgradePopupOpen] = useState(false);
   const [upgradePopupMessage, setUpgradePopupMessage] = useState("");
 
-  const isGoldActive = !!(userProfile?.isPro && userProfile?.proExpiresAt && userProfile.proExpiresAt > Date.now());
+  const isGoldActive = !!(
+    (userProfile?.vip || userProfile?.isPro) &&
+    ((userProfile?.vipExpiresAt && userProfile.vipExpiresAt > Date.now()) ||
+     (userProfile?.proExpiresAt && userProfile.proExpiresAt > Date.now()))
+  );
 
   const triggerUpgradePopup = (message: string) => {
     const hidePopupSetting = localStorage.getItem("skplayer_hide_upgrade_popup");
@@ -886,46 +902,129 @@ export default function App() {
       }
 
       if (currentUser) {
-        // Fetch/sync user profile in real-time
+        // Fetch/sync user profile in real-time with requested VIP schema
         try {
           const userDocRef = doc(db, "users", currentUser.uid);
           unsubscribeProfile = onSnapshot(userDocRef, async (docSnap) => {
+            const now = Date.now();
             if (docSnap.exists()) {
-              const profile = docSnap.data() as UserProfile;
-              
-              // Validate active VIP key status with database key record
-              if (profile.isPro && profile.proKey) {
+              const data = docSnap.data();
+
+              let isVipActive = Boolean(data.vip !== undefined ? data.vip : data.isPro);
+              let vipKey = data.vipkey !== undefined ? data.vipkey : (data.proKey || "none");
+              let expireStr = data.expire !== undefined ? data.expire : (data.proExpiresAtFormatted || "none");
+              let vipExpiresAt = Number(data.vipExpiresAt !== undefined ? data.vipExpiresAt : (data.proExpiresAt || 0));
+              let planStr = data.plan !== undefined && data.plan !== null && data.plan !== "none"
+                ? (typeof data.plan === "number" ? (data.plan === 199 ? "VIP Master (199)" : "VIP Gold (99)") : String(data.plan))
+                : "none";
+
+              // Check if 30-day VIP validity has expired
+              if (isVipActive && vipExpiresAt > 0 && now > vipExpiresAt) {
+                // Expired: reset vip to false and reset fields back to "none" as requested
+                isVipActive = false;
+                vipKey = "none";
+                expireStr = "none";
+                vipExpiresAt = 0;
+                planStr = "none";
+
                 try {
-                  const keyRef = doc(db, "keys", profile.proKey);
+                  await updateDoc(userDocRef, {
+                    vip: false,
+                    vipkey: "none",
+                    expire: "none",
+                    vipExpiresAt: 0,
+                    plan: "none",
+                    isPro: false,
+                    keyStatus: "expired",
+                    updatedAt: now
+                  });
+                } catch (e) {
+                  console.warn("Error resetting expired VIP profile:", e);
+                }
+              } else if (isVipActive && vipKey !== "none" && vipKey !== "DIRECT_SUB") {
+                // Validate against keys collection to ensure key wasn't disabled or assigned to another user
+                try {
+                  const keyRef = doc(db, "keys", vipKey);
                   const kSnap = await getDoc(keyRef);
-                  const now = Date.now();
-                  
-                  // If key was reset by Admin, disabled, deleted, or expired
-                  if (!kSnap.exists() || !kSnap.data().used || kSnap.data().status === "disabled" || (kSnap.data().userId && kSnap.data().userId !== currentUser.uid) || (profile.proExpiresAt && now > profile.proExpiresAt)) {
+                  if (!kSnap.exists() || kSnap.data().status === "disabled" || (kSnap.data().userId && kSnap.data().userId !== currentUser.uid)) {
+                    isVipActive = false;
+                    vipKey = "none";
+                    expireStr = "none";
+                    vipExpiresAt = 0;
+                    planStr = "none";
                     await updateDoc(userDocRef, {
+                      vip: false,
+                      vipkey: "none",
+                      expire: "none",
+                      vipExpiresAt: 0,
+                      plan: "none",
                       isPro: false,
-                      keyStatus: profile.proExpiresAt && now > profile.proExpiresAt ? "expired" : "reset",
+                      keyStatus: "reset",
                       updatedAt: now
                     });
-                    profile.isPro = false;
-                    profile.keyStatus = profile.proExpiresAt && now > profile.proExpiresAt ? "expired" : "reset";
                   }
                 } catch (e) {
                   console.warn("Key validation check skipped:", e);
                 }
               }
 
-              setUserProfile(profile);
-            } else {
-              // Create default profile if missing
+              // Auto-sync missing schema fields if user document was created earlier
+              if (data.vip === undefined || data.vipkey === undefined || data.expire === undefined || data.vipExpiresAt === undefined || data.plan === undefined) {
+                try {
+                  await updateDoc(userDocRef, {
+                    vip: isVipActive,
+                    vipkey: vipKey,
+                    expire: expireStr,
+                    vipExpiresAt: vipExpiresAt,
+                    plan: planStr,
+                    updatedAt: now
+                  });
+                } catch (e) {
+                  // ignore
+                }
+              }
+
               const profile: UserProfile = {
                 uid: currentUser.uid,
-                email: currentUser.email || "",
-                displayName: currentUser.displayName || currentUser.email?.split("@")[0] || "Listener",
-                photoURL: currentUser.photoURL || `https://api.dicebear.com/7.x/bottts/svg?seed=${currentUser.uid}`,
-                createdAt: Date.now()
+                email: currentUser.email || data.email || "",
+                displayName: currentUser.displayName || data.displayName || currentUser.email?.split("@")[0] || "User Name",
+                vip: isVipActive,
+                vipkey: vipKey,
+                expire: expireStr,
+                vipExpiresAt: vipExpiresAt,
+                plan: planStr,
+                updatedAt: data.updatedAt || now,
+                createdAt: data.createdAt || now,
+                photoURL: currentUser.photoURL || data.photoURL || `https://api.dicebear.com/7.x/bottts/svg?seed=${currentUser.uid}`,
+                isPro: isVipActive,
+                proKey: vipKey !== "none" ? vipKey : undefined,
+                proExpiresAt: vipExpiresAt > 0 ? vipExpiresAt : undefined,
+                keyStatus: isVipActive ? "active" : "none"
               };
-              await setDoc(userDocRef, profile);
+
+              setUserProfile(profile);
+            } else {
+              // Create default profile on user login matching the exact requested schema:
+              // { uid, email, displayName, vip: false, vipkey: "none", expire: "none", vipExpiresAt: 0, plan: "none", updatedAt }
+              const defaultUserDoc = {
+                uid: currentUser.uid,
+                email: currentUser.email || "",
+                displayName: currentUser.displayName || currentUser.email?.split("@")[0] || "User Name",
+                vip: false,
+                vipkey: "none",
+                expire: "none",
+                vipExpiresAt: 0,
+                plan: "none",
+                updatedAt: now
+              };
+              await setDoc(userDocRef, defaultUserDoc);
+
+              const profile: UserProfile = {
+                ...defaultUserDoc,
+                createdAt: now,
+                photoURL: currentUser.photoURL || `https://api.dicebear.com/7.x/bottts/svg?seed=${currentUser.uid}`,
+                isPro: false
+              };
               setUserProfile(profile);
             }
           }, (err) => {
@@ -1701,15 +1800,51 @@ export default function App() {
         }
       }
 
-      const keySnap = await getDoc(keyDocRef);
+      let keyData: any = null;
+      let isFromFirestore = false;
 
-      if (!keySnap.exists()) {
+      try {
+        const keySnap = await getDoc(keyDocRef);
+        if (keySnap.exists()) {
+          keyData = keySnap.data();
+          isFromFirestore = true;
+        }
+      } catch (e) {
+        console.warn("Firestore key fetch notice:", e);
+      }
+
+      // Fallback: Check server API (/api/keys) if not found in Firestore or Firestore quota reached
+      if (!keyData) {
+        try {
+          const res = await fetch(`/api/keys/${encodeURIComponent(trimmedKey)}`);
+          if (res.ok) {
+            const json = await res.json();
+            if (json.success && json.key) {
+              keyData = json.key;
+            }
+          }
+        } catch (e) {
+          console.warn("Server keys API check notice:", e);
+        }
+      }
+
+      // Secondary Fallback: Check localStorage cache
+      if (!keyData) {
+        try {
+          const cached = JSON.parse(localStorage.getItem("admin_vip_keys_cache") || "[]");
+          const found = cached.find((k: any) => String(k.code || k.id).toUpperCase() === trimmedKey);
+          if (found) {
+            keyData = found;
+          }
+        } catch (e) {}
+      }
+
+      if (!keyData) {
         setProKeyError("Invalid VIP key. Please enter a valid activated key.");
         setProKeyLoading(false);
         return;
       }
 
-      const keyData = keySnap.data();
       if (keyData.status !== "active" || keyData.used === true) {
         if (keyData.userId && keyData.userId === user.uid) {
           setProKeyError("You have already activated this VIP key on your account.");
@@ -1722,19 +1857,18 @@ export default function App() {
         return;
       }
 
-      // Determine plan info (99 or 199)
-      const planNumber: 99 | 199 = Number(keyData.plan) === 199 ? 199 : 99;
+      // Determine plan info (99 or 199) and duration (strictly 30 days)
+      const planNumber: 99 | 199 = Number(keyData.plan) === 199 || String(keyData.plan).includes("199") ? 199 : 99;
       const durationDays = Number(keyData.durationDays) || 30;
-      const planTitle = keyData.planName || (planNumber === 199 ? "₹199 VIP Master Pass (30 Days)" : "₹99 VIP Gold Pass (30 Days)");
+      const planTitle = keyData.planName || (planNumber === 199 ? "VIP Master (199)" : "₹99 Basic Plan");
 
+      // Time validity starts STRICTLY from the moment user uses/activates the key
       const now = Date.now();
       const calculatedExpiresAt = now + durationDays * 24 * 60 * 60 * 1000;
-      const expiresISO = new Date(calculatedExpiresAt).toISOString();
-      const expiresFormatted = new Date(calculatedExpiresAt).toLocaleDateString();
+      const expireStr = formatVipExpireDate(calculatedExpiresAt);
 
-      // Update Key Status to used in database with exact activation & expiry date
-      await updateDoc(keyDocRef, {
-        status: "used",
+      const keyUpdates = {
+        status: "used" as const,
         used: true,
         usedBy: user.email || user.uid,
         userId: user.uid,
@@ -1743,28 +1877,70 @@ export default function App() {
         usedAt: now,
         activatedAt: now,
         expiresAt: calculatedExpiresAt,
-        expiresAtDate: expiresISO,
-        expiresAtFormatted: expiresFormatted
-      });
+        expiresAtDate: expireStr,
+        expiresAtFormatted: expireStr
+      };
 
-      // Update User Profile Doc to activate Pro status for the specific plan in database
-      const userDocRef = doc(db, "users", user.uid);
-      await setDoc(userDocRef, {
+      // 1. Update Key Status on server API
+      try {
+        fetch(`/api/keys/${encodeURIComponent(trimmedKey)}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(keyUpdates)
+        }).catch(() => {});
+      } catch (e) {}
+
+      // 2. Update Key Status in Firestore
+      try {
+        await updateDoc(keyDocRef, keyUpdates);
+      } catch (e) {
+        console.warn("Firestore key update notice:", e);
+      }
+
+      // 3. Update User Profile Doc to activate VIP status matching the exact requested schema:
+      // { uid, email, displayName, vip: true, vipkey, expire, vipExpiresAt, plan, updatedAt }
+      const userPayload = {
         uid: user.uid,
         email: user.email || "",
-        displayName: user.displayName || user.email?.split("@")[0] || "User",
+        displayName: user.displayName || user.email?.split("@")[0] || "User Name",
+        vip: true,
+        vipkey: trimmedKey,
+        expire: expireStr,
+        vipExpiresAt: calculatedExpiresAt,
+        plan: planTitle,
+        updatedAt: now
+      };
+
+      try {
+        const userDocRef = doc(db, "users", user.uid);
+        await setDoc(userDocRef, {
+          ...userPayload,
+          // Compatibility properties
+          isPro: true,
+          proKey: trimmedKey,
+          proActivatedAt: now,
+          proExpiresAt: calculatedExpiresAt,
+          planName: planTitle,
+          tier: planNumber === 199 ? "master" : "gold",
+          keyStatus: "active"
+        }, { merge: true });
+      } catch (e) {
+        console.warn("Firestore user update notice:", e);
+      }
+
+      // 4. Update local user profile state immediately
+      setUserProfile(prev => ({
+        ...(prev || {
+          uid: user.uid,
+          email: user.email || "",
+          displayName: user.displayName || "User Name"
+        }),
+        ...userPayload,
         isPro: true,
         proKey: trimmedKey,
-        plan: planNumber,
-        planName: planTitle,
-        tier: planNumber === 199 ? "master" : "gold",
-        keyStatus: "active",
-        proActivatedAt: now,
         proExpiresAt: calculatedExpiresAt,
-        proExpiresAtDate: expiresISO,
-        proExpiresAtFormatted: expiresFormatted,
-        updatedAt: now
-      }, { merge: true });
+        keyStatus: "active"
+      }));
 
       setProKeySuccess(`👑 ${planTitle} Activated Successfully! All VIP premium features unlocked.`);
       setProKeyInput("");
@@ -1852,36 +2028,29 @@ export default function App() {
       const now = Date.now();
       const durationDays = 30;
       const calculatedExpiresAt = now + durationDays * 24 * 60 * 60 * 1000;
-      const expiresISO = new Date(calculatedExpiresAt).toISOString();
-      const expiresFormatted = new Date(calculatedExpiresAt).toLocaleDateString();
-      const planTitle = planType === 199 ? "₹199 ZYNC VIP Master Pass (30 Days)" : "₹99 ZYNC VIP Gold Pass (30 Days)";
+      const expireStr = formatVipExpireDate(calculatedExpiresAt);
+      const planTitle = planType === 199 ? "VIP Master (199)" : "VIP Gold (99)";
 
-      // Direct Firebase users document update with active stats
+      // Direct Firebase users document update with active VIP schema
       const userDocRef = doc(db, "users", user.uid);
       await setDoc(userDocRef, {
         uid: user.uid,
         email: user.email || "",
-        displayName: user.displayName || user.email?.split("@")[0] || "ZYNC Member",
+        displayName: user.displayName || user.email?.split("@")[0] || "User Name",
+        vip: true,
+        vipkey: "DIRECT_SUB",
+        expire: expireStr,
+        vipExpiresAt: calculatedExpiresAt,
+        plan: planTitle,
+        updatedAt: now,
+        // Compatibility properties
         isPro: true,
         subscriptionStatus: "active",
-        plan: planType,
-        planName: planTitle,
-        tier: planType === 199 ? "master" : "gold",
         keyStatus: "active",
         proActivatedAt: now,
         proExpiresAt: calculatedExpiresAt,
-        proExpiresAtDate: expiresISO,
-        proExpiresAtFormatted: expiresFormatted,
-        activeStats: {
-          status: "active",
-          plan: planType,
-          tier: planType === 199 ? "master" : "gold",
-          activatedAt: now,
-          expiresAt: calculatedExpiresAt,
-          lastActive: now,
-          syncSource: "firebase_direct_save"
-        },
-        updatedAt: now
+        planName: planTitle,
+        tier: planType === 199 ? "master" : "gold"
       }, { merge: true });
 
       // Direct Firebase top-level subscriptions document
@@ -1902,14 +2071,17 @@ export default function App() {
       // Immediate local state update
       setUserProfile(prev => ({
         ...(prev || { uid: user.uid, email: user.email || "", createdAt: now }),
+        vip: true,
+        vipkey: "DIRECT_SUB",
+        expire: expireStr,
+        vipExpiresAt: calculatedExpiresAt,
+        plan: planTitle,
+        updatedAt: now,
         isPro: true,
-        plan: planType,
         planName: planTitle,
         tier: planType === 199 ? "master" : "gold",
         proActivatedAt: now,
-        proExpiresAt: calculatedExpiresAt,
-        proExpiresAtDate: expiresISO,
-        proExpiresAtFormatted: expiresFormatted
+        proExpiresAt: calculatedExpiresAt
       }));
 
       setIsUpgradePopupOpen(false);
@@ -3730,27 +3902,32 @@ export default function App() {
                               <div className="flex items-center space-x-2">
                                 <span className="text-[10px] font-bold text-amber-400 font-mono flex items-center space-x-1 uppercase">
                                   <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping mr-1"></span>
-                                  ACTIVE IN FIREBASE
+                                  VIP ACTIVE
                                 </span>
-                                {userProfile?.plan === 199 ? (
+                                {String(userProfile?.plan).includes("199") || userProfile?.plan === 199 ? (
                                   <span className="px-2 py-0.5 rounded-full bg-gradient-to-r from-purple-500 to-amber-500 text-black text-[9px] font-black font-mono shadow-sm">
-                                    👑 ₹199 MASTER
+                                    👑 VIP Master (199)
                                   </span>
                                 ) : (
                                   <span className="px-2 py-0.5 rounded-full bg-amber-400 text-black text-[9px] font-black font-mono shadow-sm">
-                                    💎 ₹99 GOLD
+                                    💎 VIP Gold (99)
                                   </span>
                                 )}
                               </div>
                               <span className="text-xs font-mono text-amber-200/90 font-bold">
-                                {userProfile?.planName || (userProfile?.plan === 199 ? "₹199 ZYNC VIP Master Pass" : "₹99 ZYNC VIP Gold Pass")}
+                                Plan: {userProfile?.plan && userProfile.plan !== "none" ? String(userProfile.plan) : (userProfile?.planName || "VIP Pass")}
                               </span>
+                              {userProfile?.vipkey && userProfile.vipkey !== "none" && (
+                                <span className="text-[10px] text-amber-300 font-mono">
+                                  Key: {userProfile.vipkey}
+                                </span>
+                              )}
                               <span className="text-[10px] text-slate-400 font-mono">
-                                Expires: {userProfile?.proExpiresAt ? new Date(userProfile.proExpiresAt).toLocaleDateString() : "Active"}
+                                Expires: {userProfile?.expire && userProfile.expire !== "none" ? userProfile.expire : (userProfile?.vipExpiresAt ? formatVipExpireDate(userProfile.vipExpiresAt) : "Active")}
                               </span>
                               <span className="text-[9px] text-emerald-400 font-mono flex items-center gap-1">
                                 <Check className="w-3 h-3" />
-                                <span>Direct Firestore Synced</span>
+                                <span>Firestore Database Synced</span>
                               </span>
                             </div>
                           ) : (

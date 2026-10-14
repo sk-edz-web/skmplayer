@@ -130,8 +130,15 @@ function AdminApp() {
   const [adminToast, setAdminToast] = useState<{ text: string; type: "success" | "info" | "error" } | null>(null);
 
   // VIP Key Management State
-  const [keysList, setKeysList] = useState<SubscriptionKey[]>([]);
-  const [loadingKeys, setLoadingKeys] = useState(true);
+  const [keysList, setKeysList] = useState<SubscriptionKey[]>(() => {
+    try {
+      const cached = localStorage.getItem("admin_vip_keys_cache");
+      return cached ? JSON.parse(cached) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [loadingKeys, setLoadingKeys] = useState(false);
   const [generatingKey, setGeneratingKey] = useState(false);
   const [selectedPlan, setSelectedPlan] = useState<99 | 199>(99);
   const [customKeyNote, setCustomKeyNote] = useState<string>("");
@@ -1059,24 +1066,60 @@ function AdminApp() {
     return `${mins}:${remainingSecs < 10 ? "0" : ""}${remainingSecs}`;
   };
 
-  // Real-time VIP keys subscription
+  // Real-time VIP keys subscription & dual sync (Firestore + Local / Server API)
   useEffect(() => {
-    setLoadingKeys(true);
-    const q = query(collection(db, "keys"), orderBy("createdAt", "desc"));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const keysArr: any[] = [];
-      snapshot.forEach((doc) => {
-        keysArr.push({
-          id: doc.id,
-          ...doc.data()
+    // 1. Initial fetch from server API & localStorage cache
+    fetch("/api/keys")
+      .then(res => res.json())
+      .then(data => {
+        if (data.success && Array.isArray(data.keys) && data.keys.length > 0) {
+          setKeysList(prev => {
+            const map = new Map<string, SubscriptionKey>();
+            data.keys.forEach((k: any) => map.set(k.code, { id: k.code, ...k }));
+            prev.forEach(k => { if (!map.has(k.code)) map.set(k.code, k); });
+            const merged = Array.from(map.values()).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+            try {
+              localStorage.setItem("admin_vip_keys_cache", JSON.stringify(merged));
+            } catch {}
+            return merged;
+          });
+        }
+      })
+      .catch(() => {});
+
+    // 2. Real-time Firestore onSnapshot with graceful fallback
+    let unsubscribe = () => {};
+    try {
+      const q = query(collection(db, "keys"), orderBy("createdAt", "desc"));
+      unsubscribe = onSnapshot(q, (snapshot) => {
+        const keysArr: any[] = [];
+        snapshot.forEach((docSnap) => {
+          keysArr.push({
+            id: docSnap.id,
+            ...docSnap.data()
+          });
         });
+        if (keysArr.length > 0) {
+          setKeysList(prev => {
+            const map = new Map<string, SubscriptionKey>();
+            keysArr.forEach(k => map.set(k.code, k));
+            prev.forEach(k => { if (!map.has(k.code)) map.set(k.code, k); });
+            const merged = Array.from(map.values()).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+            try {
+              localStorage.setItem("admin_vip_keys_cache", JSON.stringify(merged));
+            } catch {}
+            return merged;
+          });
+        }
+        setLoadingKeys(false);
+      }, (error) => {
+        console.warn("Firestore keys subscription notice (using local & server cache):", error?.message || error);
+        setLoadingKeys(false);
       });
-      setKeysList(keysArr);
+    } catch (e) {
+      console.warn("Keys onSnapshot init notice:", e);
       setLoadingKeys(false);
-    }, (error) => {
-      console.error("Keys subscription failed:", error);
-      setLoadingKeys(false);
-    });
+    }
 
     return () => unsubscribe();
   }, []);
@@ -1114,29 +1157,25 @@ function AdminApp() {
   // Admin key generation handler (Supports ₹99 and ₹199 plans with custom notes)
   const handleGenerateVipKey = async () => {
     setGeneratingKey(true);
-    setStatusMessage(`Generating secure ₹${selectedPlan} VIP Key...`);
     try {
+      const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
       const r = (l: number) => {
-        const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
         let str = "";
         for (let i = 0; i < l; i++) {
           str += chars.charAt(Math.floor(Math.random() * chars.length));
         }
         return str;
       };
-      // Generate key in XXX-XXX-XXX format (e.g. 7K9-MP4-2XA) without VIP99 or VIP199 prefix
-      const newKeyCode = `${r(3)}-${r(3)}-${r(3)}`;
+      // Generate key in VIP-99-XXXXXX format (e.g. VIP-99-A7X92B or VIP-199-A7X92B)
+      const newKeyCode = `VIP-${selectedPlan}-${r(6)}`;
       
-      // All keys are strictly 30 days as requested
+      // All keys have strictly 30 days validity that starts upon user activation (not creation date)
       const durationDays = 30;
-      const planName = selectedPlan === 199 ? "₹199 VIP Master Pass (30 Days)" : "₹99 VIP Gold Pass (30 Days)";
+      const planName = selectedPlan === 199 ? "VIP Master (199)" : "₹99 Basic Plan";
       const now = Date.now();
-      const expiresAtTimestamp = now + durationDays * 24 * 60 * 60 * 1000;
-      const expiresAtISO = new Date(expiresAtTimestamp).toISOString();
-      const expiresAtFormatted = new Date(expiresAtTimestamp).toLocaleDateString();
 
-      const keyDocRef = doc(db, "keys", newKeyCode);
-      await setDoc(keyDocRef, {
+      const newKeyData: SubscriptionKey = {
+        id: newKeyCode,
         code: newKeyCode,
         plan: selectedPlan,
         planName: planName,
@@ -1148,16 +1187,47 @@ function AdminApp() {
         used: false,
         usedBy: "",
         usedAt: 0,
-        expiresAt: expiresAtTimestamp,
-        expiresAtDate: expiresAtISO,
-        expiresAtFormatted: expiresAtFormatted
-      });
+        activatedAt: 0,
+        expiresAt: 0,
+        expiresAtDate: "none",
+        expiresAtFormatted: "Not yet activated"
+      };
+
+      // 1. Immediately update UI state so user sees the newly generated key with 0 delay
+      setKeysList(prev => [newKeyData, ...prev.filter(k => k.code !== newKeyCode)]);
+      
+      // 2. Persist to localStorage cache
+      try {
+        const cached = JSON.parse(localStorage.getItem("admin_vip_keys_cache") || "[]");
+        const updated = [newKeyData, ...cached.filter((k: any) => k.code !== newKeyCode)];
+        localStorage.setItem("admin_vip_keys_cache", JSON.stringify(updated));
+      } catch (e) {
+        console.warn("Local storage write notice:", e);
+      }
+
+      // 3. Persist to server API (/api/keys)
+      try {
+        fetch("/api/keys", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(newKeyData)
+        }).catch(e => console.warn("Server API write notice:", e));
+      } catch (e) {}
+
+      // 4. Persist to Firebase Firestore (resilient to quota or connection limits)
+      try {
+        const keyDocRef = doc(db, "keys", newKeyCode);
+        await setDoc(keyDocRef, newKeyData);
+      } catch (firestoreErr: any) {
+        console.warn("Firestore write notice (saved locally and to server):", firestoreErr?.message || firestoreErr);
+      }
+
       setCustomKeyNote("");
       showAdminToast(`Successfully created ${planName} Key: ${newKeyCode} 👑`, "success");
       setStatusMessage(`Generated ${planName} Key: ${newKeyCode} 🎉`);
-    } catch (err) {
+    } catch (err: any) {
       console.error("Failed to generate VIP key:", err);
-      setStatusMessage("Failed to generate VIP key.");
+      setStatusMessage(`Error: ${err?.message || "Failed to generate VIP key."}`);
       showAdminToast("Failed to generate VIP key.", "error");
     } finally {
       setGeneratingKey(false);
@@ -1175,67 +1245,74 @@ function AdminApp() {
   // Toggle key status: Activate (reset used status) / Deactivate
   const handleToggleKeyStatus = async (keyId: string, currentStatus: string, isUsed: boolean) => {
     try {
-      const keyDocRef = doc(db, "keys", keyId);
-      const keySnap = await getDoc(keyDocRef);
-      const keyData = keySnap.exists() ? keySnap.data() : null;
+      const updates = (isUsed || currentStatus === "disabled") ? {
+        status: "active" as const,
+        used: false,
+        usedBy: "",
+        userId: "",
+        activatedBy: "",
+        activatedUserId: "",
+        usedAt: 0,
+        activatedAt: 0,
+        expiresAt: 0,
+        expiresAtDate: "none",
+        expiresAtFormatted: "Not yet activated"
+      } : {
+        status: "disabled" as const
+      };
 
-      if (isUsed || currentStatus === "disabled") {
-        // Activate/Reactivate back to active state and reset used details with updated 30-day expiration
-        const now = Date.now();
-        const durationDays = 30;
-        const expiresAtTimestamp = now + durationDays * 24 * 60 * 60 * 1000;
-        
-        await updateDoc(keyDocRef, {
-          status: "active",
-          used: false,
-          usedBy: "",
-          userId: "",
-          activatedBy: "",
-          activatedUserId: "",
-          usedAt: 0,
-          expiresAt: expiresAtTimestamp,
-          expiresAtDate: new Date(expiresAtTimestamp).toISOString(),
-          expiresAtFormatted: new Date(expiresAtTimestamp).toLocaleDateString()
-        });
+      // 1. Immediately update local state
+      setKeysList(prev => prev.map(k => (k.id === keyId || k.code === keyId) ? { ...k, ...updates } : k));
 
-        // If this key was previously linked to a user, update that user's status in Firestore to revoked/reset
-        if (keyData?.userId) {
-          try {
-            const linkedUserRef = doc(db, "users", keyData.userId);
-            await updateDoc(linkedUserRef, {
-              isPro: false,
-              keyStatus: "reset",
-              updatedAt: Date.now()
-            });
-          } catch (e) {
-            console.warn("Could not update linked user profile on key reset:", e);
-          }
-        }
+      // 2. Persist to localStorage
+      try {
+        const cached = JSON.parse(localStorage.getItem("admin_vip_keys_cache") || "[]");
+        const updated = cached.map((k: any) => (k.id === keyId || k.code === keyId) ? { ...k, ...updates } : k);
+        localStorage.setItem("admin_vip_keys_cache", JSON.stringify(updated));
+      } catch {}
 
-        showAdminToast(`Key ${keyId} successfully reactivated and reset! 👑`, "success");
-        setStatusMessage(`Key ${keyId} successfully reactivated and reset! 👑`);
-      } else {
-        // Deactivate/Disable the key
-        await updateDoc(keyDocRef, {
-          status: "disabled"
-        });
+      // 3. Persist to server API
+      try {
+        fetch(`/api/keys/${encodeURIComponent(keyId)}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(updates)
+        }).catch(() => {});
+      } catch {}
+
+      // 4. Update in Firestore with try/catch
+      try {
+        const keyDocRef = doc(db, "keys", keyId);
+        const keySnap = await getDoc(keyDocRef);
+        const keyData = keySnap.exists() ? keySnap.data() : null;
+        await updateDoc(keyDocRef, updates);
 
         if (keyData?.userId) {
           try {
             const linkedUserRef = doc(db, "users", keyData.userId);
             await updateDoc(linkedUserRef, {
+              vip: false,
+              vipkey: "none",
+              expire: "none",
+              vipExpiresAt: 0,
+              plan: "none",
               isPro: false,
-              keyStatus: "disabled",
+              keyStatus: isUsed || currentStatus === "disabled" ? "reset" : "disabled",
               updatedAt: Date.now()
             });
           } catch (e) {
-            console.warn("Could not update linked user profile on key disable:", e);
+            console.warn("Could not update linked user profile:", e);
           }
         }
-
-        showAdminToast(`Key ${keyId} successfully deactivated.`, "info");
-        setStatusMessage(`Key ${keyId} successfully deactivated.`);
+      } catch (firestoreErr) {
+        console.warn("Firestore toggle notice:", firestoreErr);
       }
+
+      const msg = (isUsed || currentStatus === "disabled") 
+        ? `Key ${keyId} successfully reactivated and reset! 👑`
+        : `Key ${keyId} successfully deactivated.`;
+      showAdminToast(msg, (isUsed || currentStatus === "disabled") ? "success" : "info");
+      setStatusMessage(msg);
     } catch (err) {
       console.error("Failed to toggle key status:", err);
       setStatusMessage("Failed to update key status.");
@@ -1247,7 +1324,28 @@ function AdminApp() {
   const handleDeleteKey = async (keyId: string) => {
     if (!window.confirm(`Are you sure you want to delete VIP passcode ${keyId}?`)) return;
     try {
-      await deleteDoc(doc(db, "keys", keyId));
+      // 1. Immediately update local state
+      setKeysList(prev => prev.filter(k => k.id !== keyId && k.code !== keyId));
+
+      // 2. Persist to localStorage
+      try {
+        const cached = JSON.parse(localStorage.getItem("admin_vip_keys_cache") || "[]");
+        const updated = cached.filter((k: any) => k.id !== keyId && k.code !== keyId);
+        localStorage.setItem("admin_vip_keys_cache", JSON.stringify(updated));
+      } catch {}
+
+      // 3. Persist to server API
+      try {
+        fetch(`/api/keys/${encodeURIComponent(keyId)}`, { method: "DELETE" }).catch(() => {});
+      } catch {}
+
+      // 4. Delete from Firestore
+      try {
+        await deleteDoc(doc(db, "keys", keyId));
+      } catch (e) {
+        console.warn("Firestore delete notice:", e);
+      }
+
       setStatusMessage(`Passcode ${keyId} successfully deleted.`);
     } catch (err) {
       console.error("Failed to delete key:", err);
@@ -3692,19 +3790,25 @@ function AdminApp() {
                         
                         <div className="text-[10px] text-slate-400 font-mono space-y-0.5 leading-relaxed">
                           <p>Created: {new Date(k.createdAt || Date.now()).toLocaleString()}</p>
-                          {k.expiresAt && (
-                            <p className="text-amber-300/90 font-bold">
-                              Expiry Date: {k.expiresAtFormatted || new Date(k.expiresAt).toLocaleDateString()} ({new Date(k.expiresAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})
-                            </p>
-                          )}
-                          {k.usedBy && (
-                            <p className="text-slate-300">
-                              Activated by User: <span className="text-amber-400 font-bold">{k.usedBy}</span>
-                            </p>
-                          )}
-                          {k.usedAt && (
-                            <p className="text-slate-400">
-                              Activated on: {new Date(k.usedAt).toLocaleString()}
+                          {k.used ? (
+                            <>
+                              <p className="text-slate-300">
+                                Activated by User: <span className="text-amber-400 font-bold">{k.usedBy}</span>
+                              </p>
+                              {(k.activatedAt || k.usedAt) && (
+                                <p className="text-slate-400">
+                                  Activated on: {new Date(k.activatedAt || k.usedAt || Date.now()).toLocaleString()}
+                                </p>
+                              )}
+                              {k.expiresAt && k.expiresAt > 0 ? (
+                                <p className="text-amber-300/90 font-bold">
+                                  Expires on: {k.expiresAtDate || k.expiresAtFormatted || new Date(k.expiresAt).toLocaleString()}
+                                </p>
+                              ) : null}
+                            </>
+                          ) : (
+                            <p className="text-emerald-400 font-semibold">
+                              Validity: {k.durationDays || 30} Days (Starts from user activation)
                             </p>
                           )}
                         </div>

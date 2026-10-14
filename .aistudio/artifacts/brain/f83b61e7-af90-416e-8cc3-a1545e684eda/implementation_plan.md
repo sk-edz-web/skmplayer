@@ -1,152 +1,190 @@
-# YouTube-Style Video Player & Admin Video Management
+# VIP Key Activation Lifecycle & User Schema Synchronization
 
-A full-fledged YouTube-style video playback and management system seamlessly integrated into the ZYNC platform. This delivers dedicated video streaming for community-hosted and YouTube streams with dynamic quality switching (4K/1080p/720p/480p), ImgBB-powered thumbnail uploads in Admin, YouTube-style engagement actions, and effortless navigation between video and music playback.
-
----
+Update the VIP key generation and activation system so keys begin their 30-day countdown timer strictly when activated by a user, and standardize user profile storage in Firebase Firestore to the exact requested schema on user login and key activation.
 
 ### User Review & Critical Decisions
 
 > [!IMPORTANT]
-> The following architectural and UX specifications were clarified and confirmed during Phase 1:
-
-- **Confirmed Decision 1 (Video Source Support)**: Supports both YouTube embed URLs (standard and short URLs) and custom direct hosted video streams (MP4/WebM/HLS). Both play reliably with unified responsive playback controls.
-- **Confirmed Decision 2 (Resolution / Quality Switching)**: Dual-mode quality selector:
-  - For custom hosted streams, the video player includes a resolution switcher allowing users to choose between 4K, 1080p, 720p, and 480p streams configured in Admin, preserving playback position seamlessly across resolution changes.
-  - For YouTube streams, native YouTube multi-resolution controls and embeds handle adaptive streaming smoothly.
-- **Confirmed Decision 3 (ImgBB Thumbnail Upload)**: Uses the existing ImgBB integration in the app (`IMGBB_KEY: 7a39d89ccdbcf9a749363143c7b6009f`) for 1-click thumbnail/cover image uploading in the Admin video tab, alongside direct image URL input. Restricted exclusively to the Admin dashboard.
-- **Confirmed Decision 4 (Database Video Isolation)**: Up-next recommendations, video feeds, and search display only videos registered in the Firestore database (`videos` collection). No random uncurated third-party feeds.
-- **Confirmed Decision 5 (Music Navigation Anchor)**: A prominent "🎵 Go to Music" button positioned at the top of the video player view lets users immediately return to the main music experience, automatically pausing video playback so audio does not overlap.
+> The following decisions were confirmed by the user in Phase 1:
+> - **Expiration Timestamp String (`expire`)**: Formatted as `"YYYY-MM-DD HH:mm"` (e.g. `"2026-11-13 14:30"`).
+> - **Active Plan Label (`plan`)**: Full pass title matching the plan tier, e.g. `"VIP Gold (99)"` or `"VIP Master (199)"`, and `"none"` when inactive.
+> - **Expiry Reset Behavior**: When the 30-day VIP validity expires, `vip` resets to `false`, and fields reset back to `"none"` (`vipkey: "none"`, `expire: "none"`, `vipExpiresAt: 0`, `plan: "none"`).
 
 ---
 
 ### 1. Overview & Core Concept
 
-- **What It Does**: Adds a dedicated "Videos" section to the app navigation alongside a full-featured YouTube-like video viewing experience. Users can stream high-definition music videos, live performances, and community clips. In the Admin panel, administrators can add and manage video records with titles, channel/artist names, descriptions, video URLs, resolution streams, and thumbnails uploaded directly via ImgBB.
-- **Target Audience / Persona**: Music listeners and fans who want to watch official music videos and concert footage without leaving ZYNC, as well as administrators curating multimedia content.
-- **Key Value**: Provides an immersive video experience matching YouTube's familiar layout (player, title, channel info, like button, comments/details, and Up Next video feed) while retaining full harmony with the core music player.
+Currently, when an Admin generates a VIP key in the Admin Console, the expiration date is pre-computed from the key creation timestamp (`createdAt`). This causes unredeemed keys to lose validity days while sitting in inventory before a user actually activates them.
+
+Furthermore, user documents in Firestore (`users/{uid}`) must be formatted with a clean, standardized schema:
+- **Default / Inactive State**:
+  ```json
+  {
+    "uid": "USER_FIREBASE_UID",
+    "email": "user@example.com",
+    "displayName": "User Name",
+    "vip": false,
+    "vipkey": "none",
+    "expire": "none",
+    "vipExpiresAt": 0,
+    "plan": "none",
+    "updatedAt": 1791975890000
+  }
+  ```
+- **Active State (Upon Key Activation)**:
+  ```json
+  {
+    "uid": "USER_FIREBASE_UID",
+    "email": "user@example.com",
+    "displayName": "User Name",
+    "vip": true,
+    "vipkey": "7K9-MP4-2XA",
+    "expire": "2026-11-13 14:30",
+    "vipExpiresAt": 1791975890000,
+    "plan": "VIP Gold (99)",
+    "updatedAt": 1791975890000
+  }
+  ```
+
+Whenever any user logs into the web app, their Firestore record is initialized or verified against this exact schema, and when an active VIP pass reaches its expiration timestamp, it cleanly transitions back to the inactive state.
 
 ---
 
 ### 2. User Experience & Visual Design
 
-- **Key User Flows**:
-  1. **Browsing Videos**: User clicks "Videos" tab in the desktop sidebar or mobile bottom navigation bar. A responsive grid of video cards appears (thumbnail, duration badge, title, creator, views, relative timestamp).
-  2. **Watching a Video**: User clicks any video card. An animated transition opens the YouTube-like player view:
-     - Top bar features a prominent "← Back to Music" / "🎵 Go to Music" button with clear breadcrumbs.
-     - 16:9 responsive theater video player with full custom controls: Play/Pause, Seekbar, Current Time / Duration, Volume / Mute, Quality Selector (4K, 1080p, 720p, 480p, Auto), and Fullscreen.
-     - Below video: Video title, view counter, published date, channel/artist avatar and name with Subscribe button.
-     - Action bar: Like button (with animated counter), Dislike, Share (copies URL to clipboard), and Save to Watch Later.
-     - Expandable description box with category tags and details.
-     - "Up Next / Related Videos" section below (mobile) or right sidebar (desktop) listing other database videos. Clicking any video switches playback with a smooth intro transition.
-  3. **Returning to Music**: User taps "Go to Music" or any music track. Video playback pauses immediately, and the app seamlessly returns to the music player.
-  4. **Admin Video Management**: Admin navigates to the Admin Panel > "Videos" tab. Admin can:
-     - Input Title, Creator / Channel Name, Category, Description.
-     - Provide primary Video URL (YouTube or direct link).
-     - Optionally configure multi-resolution stream URLs (4K, 1080p, 720p, 480p).
-     - Upload thumbnail to ImgBB with live progress or enter a direct image URL.
-     - Save to Firestore database, edit existing videos, or delete obsolete videos.
+#### A. Admin Key Management Experience (`src/admin.tsx`)
+- **Key Generation**: Admin selects ₹99 (VIP Gold) or ₹199 (VIP Master) and clicks Generate.
+- **Validity State in Admin Registry**:
+  - Unused keys clearly display `Status: Active (Unused)`, `Validity: 30 Days (Starts upon activation)`, and `Expires: Not yet activated`.
+  - Activated keys display `Status: Redeemed`, `Activated by: user@email.com`, `Activated on: [date]`, and `Expires on: [YYYY-MM-DD HH:mm]`.
+- **Zero Pill Discipline**: Statuses and timestamps in the Admin Key table are presented with clean, unboxed typographic hierarchy with subtle bullet separators.
 
-- **Visual Identity & Theme**:
-  - Consistent with ZYNC's refined dark theme (`#070a12` dark background, `#0f1422` card surfaces, subtle `#1e293b` hairline borders).
-  - Accent colors: YouTube-style subtle ruby red (`#ef4444`) for video badges/progress, paired with ZYNC's cyan (`#06b6d4`) highlights.
-  - Zero-pill metadata formatting: inline quiet typography with dot separators (`1.2M views · 2 weeks ago · Official MV`).
-
-- **Interactive Feedback & Motion**:
-  - Tactile button press animations on Like/Dislike/Share.
-  - Smooth resolution switching without video restart (preserves `currentTime` and playing state).
-  - ImgBB upload status indicator with progress percentage and instant preview thumbnail.
+#### B. User Experience & Account View (`src/App.tsx`)
+- **Login / Account Sync**: When a user logs in, the app real-time listens to `users/{uid}`. If new, it creates the document with `vip: false`, `vipkey: "none"`, `expire: "none"`, `vipExpiresAt: 0`, `plan: "none"`.
+- **VIP Key Activation Modal / Input**: User enters key (e.g. `7K9-MP4-2XA`). Upon clicking "Activate":
+  - Validates key in `keys/{key}`.
+  - Computes `vipExpiresAt = Date.now() + 30 * 24 * 60 * 60 * 1000`.
+  - Computes `expire = formatDateTime(vipExpiresAt)` (`"YYYY-MM-DD HH:mm"`).
+  - Updates key document: `used: true, activatedAt: now, expiresAt: vipExpiresAt, expiresAtDate: expire`.
+  - Updates user document with the active VIP payload.
+  - Displays instant celebratory toast and active VIP status badge.
+- **Expiration Guard**: Real-time listener checks if `vip === true` and `Date.now() > vipExpiresAt`. If expired, silently updates Firestore document back to default inactive schema.
 
 ---
 
 ### 3. Key Product Decisions & Trade-Offs
 
-- **Decision 1: YouTube Embed vs. HTML5 Video Player Integration**
-  - *Chosen Approach*: A hybrid smart player (`VideoPlayer.tsx`). Detects YouTube URLs (both `youtube.com/watch?v=...`, `youtu.be/...`, and `youtube.com/embed/...`) and renders an optimized YouTube iframe with privacy-enhanced controls. For direct MP4/WebM/HLS streams, renders a custom HTML5 video player with resolution switcher.
-  - *Why*: Allows seamless support for both creator-hosted direct video files and external YouTube links without broken players.
-  - *Alternatives Considered*: Enforcing only direct MP4 files (would break YouTube links) or only YouTube embeds (would block user's self-hosted video streams).
+1. **Activation-Driven Expiration vs. Pre-Computed Expiration**:
+   - *Chosen Approach*: Keys hold a `durationDays: 30` property. The actual expiration timestamp (`expiresAt`, `vipExpiresAt`) is computed at the exact millisecond the user activates the key.
+   - *Why*: Fair to paying customers; keys can be pre-generated, distributed via WhatsApp/email, or held in stock without expiring before delivery.
 
-- **Decision 2: Resolution Switching Architecture**
-  - *Chosen Approach*: Admin specifies individual stream URLs for target resolutions (e.g., 4K, 1080p, 720p, 480p) or provides a master URL. The custom player exposes a clean resolution dropdown. When switching, it copies `video.currentTime`, switches `video.src`, awaits `loadedmetadata`, and resumes playback at the exact second.
-  - *Why*: Provides true multi-bitrate/resolution switching without requiring expensive server-side transcoding infrastructure on the client.
-  - *Alternatives Considered*: Real-time client-side FFmpeg transcoding (prohibitively slow in-browser, high CPU/battery drain on mobile).
+2. **Schema Uniformity with Backwards Compatibility**:
+   - *Chosen Approach*: The Firestore document writes the user's requested root fields (`vip`, `vipkey`, `expire`, `vipExpiresAt`, `plan`, `updatedAt`). The app client state also maps `isPro: profile.vip === true` and `proKey: profile.vipkey !== "none" ? profile.vipkey : undefined`.
+   - *Why*: Guarantees all existing music player checks, audio quality switches (320kbps vs 128kbps), and download permissions continue working seamlessly without regressions while strictly fulfilling the requested Firestore data contract.
 
-- **Decision 3: ImgBB API Integration in Admin**
-  - *Chosen Approach*: Direct client-side `fetch` POST to `https://api.imgbb.com/1/upload?key=7a39d89ccdbcf9a749363143c7b6009f` using `FormData`. Automatically receives the hosted CDN URL and populates the thumbnail field.
-  - *Why*: Uses the verified ImgBB key already present in the codebase, requires zero backend proxy overhead, and provides instant image hosting.
-  - *Alternatives Considered*: Storing images in Firestore base64 (Firestore documents have strict 1MB limits).
-
-- **Decision 4: Music & Video Audio Concurrency Control**
-  - *Chosen Approach*: Global audio coordinator: When a video begins playback, the global audio player (`audioRef`) is automatically paused. Conversely, clicking "Go to Music" or playing a song pauses the video player.
-  - *Why*: Prevents chaotic dual audio playback between background music and video audio.
+3. **Date String Formatting (`YYYY-MM-DD HH:mm`)**:
+   - *Chosen Approach*: Helper function `formatVipExpireDate(timestamp)` produces zero-padded `"YYYY-MM-DD HH:mm"` in local time, ensuring exact compliance with `"2026-11-13 14:30"`.
 
 ---
 
-### 4. Technical Architecture & Data Strategy *(Technical Reference)*
+### 4. Technical Architecture & Data Strategy
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
-│                          ZYNC CLIENT APPLICATION                       │
+│                        ADMIN CONSOLE (admin.tsx)                       │
 │                                                                        │
-│  ┌───────────────────────┐      ┌───────────────────────────────────┐  │
-│  │   Navigation & Tabs   │      │        Active Playback Mode       │  │
-│  │  Home | Search |      │      │                                   │  │
-│  │  Videos | Playlists   │      │   [Music Player] ⇄ [Video Player] │  │
-│  └───────────┬───────────┘      └─────────────────┬─────────────────┘  │
-│              │                                    │                    │
-│              ▼                                    ▼                    │
-│  ┌───────────────────────┐      ┌───────────────────────────────────┐  │
-│  │   Video Discovery     │      │   YouTube-Style Video Experience  │  │
-│  │   - Grid of Cards     │────► │   - Responsive 16:9 Viewport      │  │
-│  │   - Database-Only     │      │   - Quality Selector (4K-480p)    │  │
-│  │   - Category Filters  │      │   - Likes, Share, "Go to Music"   │  │
-│  └───────────────────────┘      │   - "Up Next" Database List       │  │
-│                                 └─────────────────┬─────────────────┘  │
-│                                                   │                    │
-│  ┌───────────────────────┐                        │                    │
-│  │   Admin Video Tab     │                        │                    │
-│  │   - Add/Edit Videos   │                        │                    │
-│  │   - Multi-res Streams │                        │                    │
-│  │   - ImgBB Upload      │                        │                    │
-│  └───────────┬───────────┘                        │                    │
-│              │                                    │                    │
-└──────────────┼────────────────────────────────────┼────────────────────┘
-               │                                    │
-               ▼                                    ▼
-┌───────────────────────────────┐  ┌────────────────────────────────────┐
-│      ImgBB Image Host         │  │        Firestore Database          │
-│  api.imgbb.com/1/upload       │  │        Collection: "videos"        │
-│  Key: 7a39d89ccdbcf9a...      │  │  - title, creator, videoUrl,      │
-│                               │  │    resolutions, thumbnailUrl,      │
-│                               │  │    likes, views, createdAt         │
-└───────────────────────────────┘  └────────────────────────────────────┘
+│  [Generate Key Button] ──> writes keys/{code}:                         │
+│                           { code: "...", durationDays: 30,             │
+│                             used: false, status: "active",             │
+│                             usedAt: 0, expiresAt: 0,                   │
+│                             createdAt: timestamp }                     │
+└───────────────────────────────────┬────────────────────────────────────┘
+                                    │
+                                    ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│                   FIREBASE FIRESTORE DATABASE (db)                     │
+│                                                                        │
+│   /keys/{code}                   /users/{uid}                          │
+│   ├── code                       ├── uid                               │
+│   ├── durationDays: 30           ├── email                             │
+│   ├── status: "active"|"used"    ├── displayName                       │
+│   ├── used: boolean              ├── vip: true | false                 │
+│   ├── usedBy: string             ├── vipkey: "CODE" | "none"           │
+│   ├── activatedAt: timestamp     ├── expire: "YYYY-MM-DD HH:mm"|"none" │
+│   └── expiresAt: timestamp       ├── vipExpiresAt: timestamp | 0       │
+│                                  ├── plan: "VIP Gold (99)" | "none"    │
+│                                  └── updatedAt: timestamp              │
+└───────────────────────────────────▲────────────────────────────────────┘
+                                    │
+                                    │ onLogin() / onActivateKey()
+┌───────────────────────────────────┴────────────────────────────────────┐
+│                        WEB APP CLIENT (App.tsx)                        │
+│                                                                        │
+│  1. onAuthStateChanged:                                                │
+│     - Document missing? Set default { vip: false, vipkey: "none", ... }│
+│     - Active VIP expired? Reset to { vip: false, vipkey: "none", ... } │
+│                                                                        │
+│  2. handleActivateProKey:                                              │
+│     - Reads keys/{code}                                                │
+│     - Calculates: now + durationDays (30 days)                         │
+│     - Atomically updates keys/{code} & users/{uid}                     │
+└────────────────────────────────────────────────────────────────────────┘
 ```
 
-#### Data Model (`src/types.ts` / Firestore `videos` collection):
-```typescript
-export interface VideoItem {
-  id: string;
-  title: string;
-  creator: string; // Artist or Channel name
-  description: string;
-  category: string;
-  videoUrl: string; // Primary stream URL or YouTube link
-  isYouTube: boolean;
-  resolutions?: {
-    "4k"?: string;
-    "1080p"?: string;
-    "720p"?: string;
-    "480p"?: string;
-  };
-  thumbnailUrl: string;
-  duration?: number;
-  likes: number;
-  views: number;
-  createdAt: number;
+#### Detailed Schema Definitions
+
+##### Default User Document (`users/{uid}`)
+```json
+{
+  "uid": "c0X39Z...",
+  "email": "user@example.com",
+  "displayName": "User Name",
+  "vip": false,
+  "vipkey": "none",
+  "expire": "none",
+  "vipExpiresAt": 0,
+  "plan": "none",
+  "updatedAt": 1791975890000
 }
 ```
 
-#### Interactive Component & State Mapping:
-- **`src/components/VideoView.tsx`**: Main video browse feed and YouTube-like playback view with "Go to Music" navigation, quality switcher, interactive Like/Dislike, and Up Next video queue.
-- **`src/components/VideoPlayer.tsx`**: Modular video component handling YouTube embed vs. HTML5 multi-resolution switching with timestamp preservation.
-- **`src/admin.tsx` (Videos Tab)**: Complete form for metadata, YouTube/hosted URL validation, resolution stream entries, ImgBB file upload button with preview, and video deletion/editing controls.
-- **`src/App.tsx`**: Integration of the `"videos"` tab in desktop navigation, mobile tab bar, and audio/video playback coordinator.
+##### Active VIP User Document (`users/{uid}`)
+```json
+{
+  "uid": "c0X39Z...",
+  "email": "user@example.com",
+  "displayName": "User Name",
+  "vip": true,
+  "vipkey": "7K9-MP4-2XA",
+  "expire": "2026-11-13 14:30",
+  "vipExpiresAt": 1791975890000,
+  "plan": "VIP Gold (99)",
+  "updatedAt": 1791975890000
+}
+```
+
+##### Admin Key Document (`keys/{code}`)
+- **On Generation (Unused)**:
+  `code`, `plan`: `99 | 199`, `planName`: `"VIP Gold (99)" | "VIP Master (199)"`, `price`: `99 | 199`, `durationDays`: `30`, `status`: `"active"`, `used`: `false`, `usedBy`: `""`, `usedAt`: `0`, `activatedAt`: `0`, `expiresAt`: `0`, `expiresAtDate`: `"none"`, `expiresAtFormatted`: `"Not yet activated"`, `createdAt`: `Date.now()`.
+- **On Activation (Redeemed)**:
+  `used`: `true`, `status`: `"used"`, `userId`: `uid`, `usedBy`: `email`, `activatedAt`: `Date.now()`, `expiresAt`: `Date.now() + 30 * 86400000`, `expiresAtDate`: `"YYYY-MM-DD HH:mm"`, `expiresAtFormatted`: `"YYYY-MM-DD HH:mm"`.
+
+---
+
+### 5. Implementation Steps (Planned for Execution Turn)
+
+1. **Update `src/types.ts`**:
+   - Update `UserProfile` interface to include `vip: boolean`, `vipkey: string`, `expire: string`, `vipExpiresAt: number`, `plan: string`, `updatedAt: number`.
+   - Update `SubscriptionKey` interface to support activation-time expiration.
+2. **Update Admin Console (`src/admin.tsx`)**:
+   - Modify `handleGenerateVipKey` so it does NOT calculate `expiresAt` at creation time.
+   - Set initial key expiry status as unredeemed with duration 30 days.
+   - Update Admin key registry table rendering to show activation status and proper dates.
+3. **Update Web App (`src/App.tsx`)**:
+   - Add `formatVipExpireDate(timestamp)` helper for `"YYYY-MM-DD HH:mm"`.
+   - Update `onAuthStateChanged` profile sync to initialize user documents with the exact requested schema on login.
+   - Add automatic expiry check in real-time profile listener to reset expired VIPs back to `"none"`.
+   - Update `handleActivateProKey` to compute 30 days from activation moment, format date, and write exact payload to `users/{uid}` and `keys/{code}`.
+4. **Verification**:
+   - Compile applet with `compile_applet`.
+   - Run linter with `lint_applet` to ensure zero type or lint errors.

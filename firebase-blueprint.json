@@ -8,6 +8,12 @@
         "uid": { "type": "string" },
         "email": { "type": "string" },
         "displayName": { "type": "string" },
+        "vip": { "type": "boolean" },
+        "vipkey": { "type": "string" },
+        "expire": { "type": "string" },
+        "vipExpiresAt": { "type": "number" },
+        "plan": { "type": "string" },
+        "updatedAt": { "type": "number" },
         "photoURL": { "type": "string" },
         "createdAt": { "type": "number" },
         "isPro": { "type": "boolean" },
@@ -15,7 +21,7 @@
         "proActivatedAt": { "type": "number" },
         "proExpiresAt": { "type": "number" }
       },
-      "required": ["uid", "email", "createdAt"]
+      "required": ["uid", "email"]
     },
     "Song": {
       "title": "Song",
@@ -54,14 +60,21 @@
       "description": "VIP activation keys for PRO membership",
       "type": "object",
       "properties": {
-        "id": { "type": "string" },
+        "code": { "type": "string" },
+        "plan": { "type": "number" },
+        "planName": { "type": "string" },
+        "durationDays": { "type": "number" },
         "used": { "type": "boolean" },
         "usedBy": { "type": "string" },
+        "userId": { "type": "string" },
         "usedAt": { "type": "number" },
+        "activatedAt": { "type": "number" },
+        "expiresAt": { "type": "number" },
+        "expiresAtDate": { "type": "string" },
         "createdAt": { "type": "number" },
         "status": { "type": "string" }
       },
-      "required": ["id", "used", "createdAt", "status"]
+      "required": ["code", "used", "createdAt", "status"]
     },
     "Report": {
       "title": "Report",

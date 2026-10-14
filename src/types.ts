@@ -45,21 +45,26 @@ export interface UserProfile {
   email: string;
   displayName?: string;
   photoURL?: string;
-  createdAt: number;
+  vip?: boolean;
+  vipkey?: string;
+  expire?: string;
+  vipExpiresAt?: number;
+  plan?: string | number;
+  updatedAt?: number;
+  createdAt?: number;
   isPro?: boolean;
   proKey?: string;
   proActivatedAt?: number;
   proExpiresAt?: number;
   proExpiresAtDate?: string;
   proExpiresAtFormatted?: string;
-  plan?: 99 | 199 | number;
   planName?: string;
   tier?: string;
   keyStatus?: string;
 }
 
 export interface SubscriptionKey {
-  id: string;
+  id?: string;
   code: string;
   plan: 99 | 199;
   planName: string;
@@ -71,6 +76,7 @@ export interface SubscriptionKey {
   userId?: string;
   activatedBy?: string;
   activatedUserId?: string;
+  activatedAt?: number;
   usedAt?: number;
   status: "active" | "disabled" | "used";
   createdAt: number;
