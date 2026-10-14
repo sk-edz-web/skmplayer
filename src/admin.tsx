@@ -1166,8 +1166,9 @@ function AdminApp() {
         }
         return str;
       };
-      // Generate key strictly in xxx-xxx-xxx format (e.g. A7X-92B-K4P)
-      const newKeyCode = `${r(3)}-${r(3)}-${r(3)}`;
+      // Generate key strictly in xxx-xxx-xxx format with plan code (e.g. 199-A7X-92B for ₹199 and 099-A7X-92B for ₹99)
+      const planPrefix = selectedPlan === 199 ? "199" : "099";
+      const newKeyCode = `${planPrefix}-${r(3)}-${r(3)}`;
       
       // All keys have strictly 30 days validity that starts upon user activation (not creation date)
       const durationDays = 30;
@@ -3740,14 +3741,27 @@ function AdminApp() {
                 </div>
               ) : (
                 <div className="space-y-3 max-h-[580px] overflow-y-auto pr-2 custom-scrollbar">
-                  {keysList.map((k) => (
+                  {keysList
+                    .filter((k) => {
+                      const is199 = Number(k.plan) === 199 || String(k.plan) === "199" || String(k.code).startsWith("199") || String(k.planName).includes("199");
+                      if (keyFilterPlan === "99") return !is199;
+                      if (keyFilterPlan === "199") return is199;
+                      return true;
+                    })
+                    .map((k) => {
+                      const isKey199 = Number(k.plan) === 199 || String(k.plan) === "199" || String(k.code).startsWith("199") || String(k.planName).includes("199");
+                      return (
                     <div
                       key={k.id}
                       className="flex flex-col sm:flex-row sm:items-center justify-between p-4 bg-white/[0.02] hover:bg-white/[0.05] border border-white/5 rounded-2xl gap-4 transition-all duration-300 hover:translate-x-1"
                     >
                       <div className="space-y-2">
                         <div className="flex flex-wrap items-center gap-2">
-                          <span className="font-mono font-black text-amber-400 bg-amber-500/10 border border-amber-500/20 px-3 py-1 rounded-lg text-sm tracking-wider shadow-[0_2px_8px_rgba(245,158,11,0.05)] select-all">
+                          <span className={`font-mono font-black px-3 py-1 rounded-lg text-sm tracking-wider shadow-sm select-all border ${
+                            isKey199
+                              ? "text-yellow-300 bg-yellow-500/15 border-yellow-400/40"
+                              : "text-amber-400 bg-amber-500/10 border-amber-500/20"
+                          }`}>
                             {k.code}
                           </span>
 
@@ -3771,12 +3785,12 @@ function AdminApp() {
                           </button>
                           
                           {/* Plan Badge */}
-                          <span className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded-full border ${
-                            k.plan === "199"
-                              ? "bg-yellow-500/15 border-yellow-500/30 text-yellow-300"
+                          <span className={`text-[10px] font-mono font-bold px-2.5 py-0.5 rounded-full border ${
+                            isKey199
+                              ? "bg-yellow-500/25 border-yellow-400 text-yellow-300 shadow-[0_0_10px_rgba(234,179,8,0.2)]"
                               : "bg-amber-500/15 border-amber-500/30 text-amber-300"
                           }`}>
-                            {k.plan === "199" ? `👑 ₹199 (${k.durationDays || 30} Days)` : `💎 ₹99 (${k.durationDays || 30} Days)`}
+                            {isKey199 ? `👑 ₹199 VIP Master (${k.durationDays || 30} Days)` : `💎 ₹99 VIP Gold (${k.durationDays || 30} Days)`}
                           </span>
 
                           {k.used ? (
@@ -3848,7 +3862,8 @@ function AdminApp() {
                         </button>
                       </div>
                     </div>
-                  ))}
+                  );
+                })}
                 </div>
               )}
             </div>

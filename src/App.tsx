@@ -1885,9 +1885,19 @@ export default function App() {
       const finalKeyCode = keyData.code || actualKeyDocId;
 
       // Determine plan info (99 or 199) and duration (strictly 30 days)
-      const planNumber: 99 | 199 = Number(keyData.plan) === 199 || String(keyData.plan).includes("199") ? 199 : 99;
-      const durationDays = Number(keyData.durationDays) || 30;
-      const planTitle = keyData.planName || (planNumber === 199 ? "VIP Master (199)" : "₹99 Basic Plan");
+      const is199 = 
+        Number(keyData?.plan) === 199 || 
+        String(keyData?.plan) === "199" || 
+        String(keyData?.price) === "199" ||
+        String(keyData?.planName).includes("199") ||
+        finalKeyCode.startsWith("199") ||
+        rawInput.startsWith("199");
+
+      const planNumber: 99 | 199 = is199 ? 199 : 99;
+      const durationDays = Number(keyData?.durationDays) || 30;
+      const planTitle = is199 
+        ? "VIP Master (199)" 
+        : "₹99 Basic Plan";
 
       // Time validity starts STRICTLY from the moment user uses/activates the key
       const now = Date.now();
@@ -1953,7 +1963,7 @@ export default function App() {
             proActivatedAt: now,
             proExpiresAt: calculatedExpiresAt,
             planName: planTitle,
-            tier: planNumber === 199 ? "master" : "gold",
+            tier: is199 ? "master" : "gold",
             keyStatus: "active"
           }, { merge: true }),
           new Promise((resolve) => setTimeout(resolve, 800))
@@ -1973,6 +1983,8 @@ export default function App() {
         isPro: true,
         proKey: finalKeyCode,
         proExpiresAt: calculatedExpiresAt,
+        planName: planTitle,
+        tier: is199 ? "master" : "gold",
         keyStatus: "active"
       }));
 
