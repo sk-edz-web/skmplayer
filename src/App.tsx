@@ -1883,43 +1883,27 @@ export default function App() {
       }
 
       const finalKeyCode = keyData.code || actualKeyDocId;
-
-      // Determine plan info (99 vs 199) strictly based on authoritative keyData
-      let is199 = false;
-      if (keyData?.plan !== undefined && keyData?.plan !== null && keyData?.plan !== "") {
-        const pNum = Number(keyData.plan);
-        is199 = pNum === 199;
-      } else if (keyData?.price !== undefined && keyData?.price !== null && keyData?.price !== 0) {
-        const prNum = Number(keyData.price);
-        is199 = prNum === 199;
-      } else if (keyData?.planName) {
-        is199 = String(keyData.planName).includes("199");
-      } else {
-        is199 = false;
-      }
-
-      const planNumber: 99 | 199 = is199 ? 199 : 99;
-      const durationDays = Number(keyData?.durationDays) || 30;
-      const planTitle = is199 
-        ? "VIP Master (199)" 
-        : "₹99 Basic Plan";
+      const durationDays = 30;
+      const planTitle = "VIP Pass (99)";
 
       // Time validity starts STRICTLY from the moment user uses/activates the key
       const now = Date.now();
       const calculatedExpiresAt = now + durationDays * 24 * 60 * 60 * 1000;
+      const activatedAtStr = formatVipExpireDate(now);
       const expireStr = formatVipExpireDate(calculatedExpiresAt);
+      const userIdentifier = user.email || user.displayName || user.uid;
 
       const keyUpdates = {
         status: "used" as const,
         used: true,
-        user: user.email || user.uid,
+        user: userIdentifier,
+        usedBy: userIdentifier,
         expire: expireStr,
-        usedBy: user.email || user.uid,
+        activatedAt: activatedAtStr,
         userId: user.uid,
-        activatedBy: user.email || user.uid,
+        activatedBy: userIdentifier,
         activatedUserId: user.uid,
         usedAt: now,
-        activatedAt: now,
         expiresAt: calculatedExpiresAt,
         expiresAtDate: expireStr,
         expiresAtFormatted: expireStr
@@ -1942,8 +1926,7 @@ export default function App() {
         console.warn("Firestore key update notice:", e);
       }
 
-      // 3. Update User Profile Doc to activate VIP status matching the exact requested schema:
-      // { uid, email, displayName, vip: true, vipkey, expire, vipExpiresAt, plan, updatedAt }
+      // 3. Update User Profile Doc to activate VIP status matching schema:
       const userPayload = {
         uid: user.uid,
         email: user.email || "",
@@ -1966,7 +1949,7 @@ export default function App() {
           proActivatedAt: now,
           proExpiresAt: calculatedExpiresAt,
           planName: planTitle,
-          tier: is199 ? "master" : "gold",
+          tier: "gold",
           keyStatus: "active"
         }, { merge: true });
       } catch (e) {
@@ -1985,7 +1968,7 @@ export default function App() {
         proKey: finalKeyCode,
         proExpiresAt: calculatedExpiresAt,
         planName: planTitle,
-        tier: is199 ? "master" : "gold",
+        tier: "gold",
         keyStatus: "active"
       }));
 
@@ -3979,32 +3962,18 @@ export default function App() {
                             </div>
                           ) : (
                             <div className="flex flex-col space-y-3 w-full md:w-auto md:min-w-[340px]">
-                              {/* 1-Click Direct Plan Subscription Buttons */}
-                              <div className="grid grid-cols-2 gap-2">
-                                <button
-                                  onClick={() => handleDirectSubscribe(99)}
-                                  disabled={proKeyLoading}
-                                  className="p-3 rounded-2xl bg-gradient-to-b from-amber-500/20 to-amber-900/30 border border-amber-500/40 hover:border-amber-400 text-left transition-all hover:scale-[1.02] active:scale-95 cursor-pointer disabled:opacity-50"
-                                >
-                                  <div className="flex items-center justify-between">
-                                    <span className="text-xs font-black text-amber-300">₹99 Pass</span>
-                                    <Crown className="w-3.5 h-3.5 text-amber-400" />
-                                  </div>
-                                  <span className="text-[10px] text-slate-300 block mt-1">30 Days VIP Gold</span>
-                                </button>
-
-                                <button
-                                  onClick={() => handleDirectSubscribe(199)}
-                                  disabled={proKeyLoading}
-                                  className="p-3 rounded-2xl bg-gradient-to-b from-purple-500/20 to-indigo-900/30 border border-purple-500/40 hover:border-purple-400 text-left transition-all hover:scale-[1.02] active:scale-95 cursor-pointer disabled:opacity-50"
-                                >
-                                  <div className="flex items-center justify-between">
-                                    <span className="text-xs font-black text-purple-300">₹199 Master</span>
-                                    <Crown className="w-3.5 h-3.5 text-purple-400" />
-                                  </div>
-                                  <span className="text-[10px] text-slate-300 block mt-1">30 Days VIP Master</span>
-                                </button>
-                              </div>
+                              {/* Single Featured Plan: ₹99 VIP Pass */}
+                              <button
+                                onClick={() => handleDirectSubscribe(99)}
+                                disabled={proKeyLoading}
+                                className="w-full p-3.5 rounded-2xl bg-gradient-to-r from-amber-500/20 via-yellow-500/15 to-amber-900/30 border border-amber-500/40 hover:border-amber-400 text-left transition-all hover:scale-[1.01] active:scale-95 cursor-pointer disabled:opacity-50"
+                              >
+                                <div className="flex items-center justify-between">
+                                  <span className="text-xs font-black text-amber-300">₹99 VIP Pass</span>
+                                  <Crown className="w-4 h-4 text-amber-400 animate-pulse" />
+                                </div>
+                                <span className="text-[10px] text-slate-200 block mt-1 font-medium">30 Days Unlimited Access (Starts upon activation)</span>
+                              </button>
 
                               <span className="text-[10px] font-mono font-bold text-amber-400/80">OR ACTIVATE WITH VIP KEY</span>
                               <div className="flex items-center space-x-2">
@@ -4534,32 +4503,18 @@ export default function App() {
 
               {/* Action Buttons to activate directly or with key */}
               <div className="w-full pt-3 flex flex-col space-y-3">
-                {/* 1-Click Direct Plan Subscription Buttons with instant Firestore save */}
-                <div className="grid grid-cols-2 gap-2.5">
-                  <button
-                    onClick={() => handleDirectSubscribe(99)}
-                    disabled={proKeyLoading}
-                    className="p-3 rounded-2xl bg-gradient-to-b from-amber-500/20 to-amber-950/40 border border-amber-500/40 hover:border-amber-400 text-left transition-all hover:scale-[1.02] active:scale-95 cursor-pointer disabled:opacity-50"
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-black text-amber-300">₹99 Gold</span>
-                      <Crown className="w-3.5 h-3.5 text-amber-400" />
-                    </div>
-                    <span className="text-[10px] text-slate-300 block mt-0.5">30 Days Pass</span>
-                  </button>
-
-                  <button
-                    onClick={() => handleDirectSubscribe(199)}
-                    disabled={proKeyLoading}
-                    className="p-3 rounded-2xl bg-gradient-to-b from-purple-500/20 to-indigo-950/40 border border-purple-500/40 hover:border-purple-400 text-left transition-all hover:scale-[1.02] active:scale-95 cursor-pointer disabled:opacity-50"
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-black text-purple-300">₹199 Master</span>
-                      <Crown className="w-3.5 h-3.5 text-purple-400" />
-                    </div>
-                    <span className="text-[10px] text-slate-300 block mt-0.5">30 Days Pass</span>
-                  </button>
-                </div>
+                {/* 1-Click Direct Plan Subscription Button with instant Firestore save */}
+                <button
+                  onClick={() => handleDirectSubscribe(99)}
+                  disabled={proKeyLoading}
+                  className="w-full p-3.5 rounded-2xl bg-gradient-to-r from-amber-500/20 via-yellow-500/20 to-amber-950/40 border border-amber-500/40 hover:border-amber-400 text-left transition-all hover:scale-[1.02] active:scale-95 cursor-pointer disabled:opacity-50"
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-black text-amber-300">₹99 VIP Pass</span>
+                    <Crown className="w-4 h-4 text-amber-400 animate-bounce" />
+                  </div>
+                  <span className="text-[10px] text-slate-200 block mt-1 font-medium">30 Days Unlimited Access</span>
+                </button>
 
                 <button
                   onClick={() => {

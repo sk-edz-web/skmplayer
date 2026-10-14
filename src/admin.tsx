@@ -1225,12 +1225,12 @@ function AdminApp() {
           vipkey: "ADMIN_GRANTED",
           expire: expireStr,
           vipExpiresAt: calculatedExpiresAt,
-          plan: "VIP Master (199)",
+          plan: "VIP Pass (99)",
           isPro: true,
           keyStatus: "active",
           updatedAt: now
         });
-        showAdminToast(`30-Day VIP Master granted to ${targetUser.email || targetUser.displayName || targetUser.uid}! 👑`, "success");
+        showAdminToast(`30-Day VIP Pass granted to ${targetUser.email || targetUser.displayName || targetUser.uid}! 👑`, "success");
       }
     } catch (err: any) {
       console.error("Failed to toggle user VIP status:", err);
@@ -1238,7 +1238,7 @@ function AdminApp() {
     }
   };
 
-  // Admin key generation handler (Supports ₹99 and ₹199 plans with custom notes)
+  // Admin key generation handler (Strictly ₹99 plan)
   const handleGenerateVipKey = async () => {
     setGeneratingKey(true);
     try {
@@ -1250,33 +1250,32 @@ function AdminApp() {
         }
         return str;
       };
-      // Generate key strictly as 100% random characters in XXX-XXX-XXX format (no plan numbers in key string)
+      // Generate key strictly as 100% random characters in XXX-XXX-XXX format
       const newKeyCode = `${r(3)}-${r(3)}-${r(3)}`;
       
-      // All keys have strictly 30 days validity that starts upon user activation (not creation date)
       const durationDays = 30;
-      const planName = selectedPlan === 199 ? "VIP Master (199)" : "₹99 Basic Plan";
+      const planName = "VIP Pass (₹99)";
       const now = Date.now();
 
       const newKeyData: SubscriptionKey = {
         id: newKeyCode,
         code: newKeyCode,
-        plan: selectedPlan,
+        plan: 99,
         planName: planName,
-        price: selectedPlan,
+        price: 99,
         durationDays: durationDays,
         note: customKeyNote.trim() || "",
         createdAt: now,
         status: "active",
         used: false,
         user: "none",
+        usedBy: "none",
         expire: "none",
-        usedBy: "",
+        activatedAt: "none",
         usedAt: 0,
-        activatedAt: 0,
         expiresAt: 0,
         expiresAtDate: "none",
-        expiresAtFormatted: "Not yet activated"
+        expiresAtFormatted: "none"
       };
 
       // 1. Immediately update UI state so user sees the newly generated key with 0 delay
@@ -3689,51 +3688,20 @@ function AdminApp() {
                   </div>
                 </div>
 
-                {/* Plan Selection Radio Cards */}
+                {/* Featured Plan Card: ₹99 */}
                 <div className="space-y-2">
                   <label className="block text-xs font-semibold text-amber-300 uppercase tracking-wider font-mono">
-                    Select Plan Type *
+                    Plan Type *
                   </label>
-                  <div className="grid grid-cols-2 gap-3">
-                    {/* Plan 1: ₹99 */}
-                    <button
-                      type="button"
-                      onClick={() => setSelectedPlan(99)}
-                      className={`p-3.5 rounded-2xl border text-left transition-all relative overflow-hidden ${
-                        selectedPlan === 99
-                          ? "bg-amber-500/20 border-amber-400 shadow-[0_0_20px_rgba(245,158,11,0.2)]"
-                          : "bg-white/5 border-white/10 hover:bg-white/10"
-                      }`}
-                    >
-                      <div className="flex justify-between items-start mb-1.5">
-                        <span className="text-sm font-black text-amber-300">₹99 Plan</span>
-                        <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30">
-                          1 MONTH
-                        </span>
-                      </div>
-                      <p className="text-xs font-bold text-slate-200">VIP Gold</p>
-                      <p className="text-[10px] text-slate-400 mt-0.5">30 Days Unlimited Access</p>
-                    </button>
-
-                    {/* Plan 2: ₹199 */}
-                    <button
-                      type="button"
-                      onClick={() => setSelectedPlan(199)}
-                      className={`p-3.5 rounded-2xl border text-left transition-all relative overflow-hidden ${
-                        selectedPlan === 199
-                          ? "bg-gradient-to-br from-amber-500/25 to-yellow-500/20 border-yellow-300 shadow-[0_0_25px_rgba(234,179,8,0.25)]"
-                          : "bg-white/5 border-white/10 hover:bg-white/10"
-                      }`}
-                    >
-                      <div className="flex justify-between items-start mb-1.5">
-                        <span className="text-sm font-black text-yellow-300">₹199 Plan</span>
-                        <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-yellow-500/20 text-yellow-300 border border-yellow-500/30">
-                          30 DAYS
-                        </span>
-                      </div>
-                      <p className="text-xs font-bold text-slate-200">VIP Master</p>
-                      <p className="text-[10px] text-slate-400 mt-0.5">30 Days Premium Pass</p>
-                    </button>
+                  <div className="p-4 rounded-2xl bg-amber-500/20 border border-amber-400 shadow-[0_0_20px_rgba(245,158,11,0.2)] relative overflow-hidden">
+                    <div className="flex justify-between items-start mb-1.5">
+                      <span className="text-base font-black text-amber-300">₹99 VIP Plan</span>
+                      <span className="text-[10px] font-mono px-2.5 py-0.5 rounded-full bg-amber-500/30 text-amber-200 border border-amber-400/40 font-bold">
+                        30 DAYS PASS
+                      </span>
+                    </div>
+                    <p className="text-xs font-bold text-slate-200">VIP Pass (30 Days)</p>
+                    <p className="text-[10px] text-amber-200/80 mt-1">30 Days Unlimited Access from User Activation Date</p>
                   </div>
                 </div>
 
@@ -3754,17 +3722,17 @@ function AdminApp() {
                 <button
                   onClick={handleGenerateVipKey}
                   disabled={generatingKey}
-                  className="w-full flex items-center justify-center space-x-2 py-4 px-6 rounded-2xl bg-gradient-to-r from-amber-500 to-yellow-500 hover:from-amber-400 hover:to-yellow-400 text-black font-black transition-all duration-300 hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 shadow-[0_4px_20px_rgba(245,158,11,0.25)] text-xs uppercase"
+                  className="w-full flex items-center justify-center space-x-2 py-4 px-6 rounded-2xl bg-gradient-to-r from-amber-500 to-yellow-500 hover:from-amber-400 hover:to-yellow-400 text-black font-black transition-all duration-300 hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 shadow-[0_4px_20px_rgba(245,158,11,0.25)] text-xs uppercase cursor-pointer"
                 >
                   {generatingKey ? (
                     <>
                       <Loader2 className="w-4 h-4 animate-spin" />
-                      <span>Generating ₹{selectedPlan} Passcode...</span>
+                      <span>Generating ₹99 Passcode...</span>
                     </>
                   ) : (
                     <>
                       <Plus className="w-4 h-4" />
-                      <span>Generate ₹{selectedPlan} (30 Days) Key</span>
+                      <span>Generate ₹99 (30 Days) Key</span>
                     </>
                   )}
                 </button>
@@ -3786,10 +3754,10 @@ function AdminApp() {
                     <Key className="w-5 h-5 text-amber-400" />
                     <span>Passcode Registry ({keysList.length})</span>
                   </h2>
-                  <p className="text-xs text-slate-400">All generated ₹99 & ₹199 passcodes with 1-click copy</p>
+                  <p className="text-xs text-slate-400">All generated ₹99 passcodes with 1-click copy</p>
                 </div>
 
-                {/* Filter by Plan */}
+                {/* Filter Status */}
                 <div className="flex items-center space-x-1.5 p-1 bg-black/40 rounded-xl border border-white/10 self-start sm:self-auto">
                   <button
                     onClick={() => setKeyFilterPlan("all")}
@@ -3800,20 +3768,20 @@ function AdminApp() {
                     All
                   </button>
                   <button
-                    onClick={() => setKeyFilterPlan("99")}
+                    onClick={() => setKeyFilterPlan("active")}
                     className={`px-3 py-1 rounded-lg text-xs font-bold transition-all ${
-                      keyFilterPlan === "99" ? "bg-amber-500/20 text-amber-300 border border-amber-500/30" : "text-slate-400 hover:text-white"
+                      keyFilterPlan === "active" ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30" : "text-slate-400 hover:text-white"
                     }`}
                   >
-                    ₹99 Pass
+                    Active
                   </button>
                   <button
-                    onClick={() => setKeyFilterPlan("199")}
+                    onClick={() => setKeyFilterPlan("used")}
                     className={`px-3 py-1 rounded-lg text-xs font-bold transition-all ${
-                      keyFilterPlan === "199" ? "bg-yellow-500/20 text-yellow-300 border border-yellow-500/30" : "text-slate-400 hover:text-white"
+                      keyFilterPlan === "used" ? "bg-slate-500/20 text-slate-300 border border-slate-500/30" : "text-slate-400 hover:text-white"
                     }`}
                   >
-                    ₹199 Pass
+                    Used
                   </button>
                 </div>
               </div>
@@ -3828,20 +3796,26 @@ function AdminApp() {
                   <Key className="w-12 h-12 text-slate-600 mx-auto mb-3" />
                   <h3 className="text-sm font-bold text-slate-300">No passcodes generated yet</h3>
                   <p className="text-xs text-slate-400 max-w-xs mx-auto mt-1">
-                    Select ₹99 or ₹199 plan and click generate to create activation keys!
+                    Click generate above to create new ₹99 30-day VIP passcodes!
                   </p>
                 </div>
               ) : (
                 <div className="space-y-3 max-h-[580px] overflow-y-auto pr-2 custom-scrollbar">
                   {keysList
                     .filter((k) => {
-                      const is199 = Number(k.plan) === 199 || String(k.plan) === "199" || String(k.planName).includes("199");
-                      if (keyFilterPlan === "99") return !is199;
-                      if (keyFilterPlan === "199") return is199;
+                      if (keyFilterPlan === "active") return !k.used && k.status !== "disabled";
+                      if (keyFilterPlan === "used") return k.used;
                       return true;
                     })
                     .map((k) => {
-                      const isKey199 = Number(k.plan) === 199 || String(k.plan) === "199" || String(k.planName).includes("199");
+                      const displayUser = k.user && k.user !== "none" ? k.user : (k.usedBy && k.usedBy !== "none" ? k.usedBy : "none");
+                      const displayActivatedAt = k.activatedAt && k.activatedAt !== "none" 
+                        ? (typeof k.activatedAt === "number" ? formatVipExpireDate(k.activatedAt) : String(k.activatedAt)) 
+                        : (k.usedAt && k.usedAt > 0 ? formatVipExpireDate(k.usedAt) : "none");
+                      const displayExpire = k.expire && k.expire !== "none" 
+                        ? String(k.expire) 
+                        : (k.expiresAt && k.expiresAt > 0 ? formatVipExpireDate(k.expiresAt) : "none");
+
                       return (
                     <div
                       key={k.id}
@@ -3849,11 +3823,7 @@ function AdminApp() {
                     >
                       <div className="space-y-2">
                         <div className="flex flex-wrap items-center gap-2">
-                          <span className={`font-mono font-black px-3 py-1 rounded-lg text-sm tracking-wider shadow-sm select-all border ${
-                            isKey199
-                              ? "text-yellow-300 bg-yellow-500/15 border-yellow-400/40"
-                              : "text-amber-400 bg-amber-500/10 border-amber-500/20"
-                          }`}>
+                          <span className="font-mono font-black px-3 py-1 rounded-lg text-sm tracking-wider shadow-sm select-all border text-amber-400 bg-amber-500/10 border-amber-500/20">
                             {k.code}
                           </span>
 
@@ -3877,12 +3847,8 @@ function AdminApp() {
                           </button>
                           
                           {/* Plan Badge */}
-                          <span className={`text-[10px] font-mono font-bold px-2.5 py-0.5 rounded-full border ${
-                            isKey199
-                              ? "bg-yellow-500/25 border-yellow-400 text-yellow-300 shadow-[0_0_10px_rgba(234,179,8,0.2)]"
-                              : "bg-amber-500/15 border-amber-500/30 text-amber-300"
-                          }`}>
-                            {isKey199 ? `👑 ₹199 VIP Master (${k.durationDays || 30} Days)` : `💎 ₹99 VIP Gold (${k.durationDays || 30} Days)`}
+                          <span className="text-[10px] font-mono font-bold px-2.5 py-0.5 rounded-full border bg-amber-500/15 border-amber-500/30 text-amber-300">
+                            💎 ₹99 VIP Pass (30 Days)
                           </span>
 
                           {k.used ? (
@@ -3908,27 +3874,15 @@ function AdminApp() {
                         
                         <div className="text-[10px] text-slate-400 font-mono space-y-0.5 leading-relaxed">
                           <p>Created: {new Date(k.createdAt || Date.now()).toLocaleString()}</p>
-                          {k.used ? (
-                            <>
-                              <p className="text-slate-300">
-                                Activated by User: <span className="text-amber-400 font-bold">{k.usedBy}</span>
-                              </p>
-                              {(k.activatedAt || k.usedAt) && (
-                                <p className="text-slate-400">
-                                  Activated on: {new Date(k.activatedAt || k.usedAt || Date.now()).toLocaleString()}
-                                </p>
-                              )}
-                              {k.expiresAt && k.expiresAt > 0 ? (
-                                <p className="text-amber-300/90 font-bold">
-                                  Expires on: {k.expiresAtDate || k.expiresAtFormatted || new Date(k.expiresAt).toLocaleString()}
-                                </p>
-                              ) : null}
-                            </>
-                          ) : (
-                            <p className="text-emerald-400 font-semibold">
-                              Validity: {k.durationDays || 30} Days (Starts from user activation)
-                            </p>
-                          )}
+                          <p className="text-slate-300">
+                            User: <span className={displayUser !== "none" ? "text-amber-400 font-bold" : "text-slate-500"}>{displayUser}</span>
+                          </p>
+                          <p className="text-slate-400">
+                            Activated on: <span className={displayActivatedAt !== "none" ? "text-slate-200 font-semibold" : "text-slate-500"}>{displayActivatedAt}</span>
+                          </p>
+                          <p className={displayExpire !== "none" ? "text-amber-300/90 font-bold" : "text-slate-500"}>
+                            Expires on: {displayExpire}
+                          </p>
                         </div>
                       </div>
 

@@ -1,6 +1,6 @@
 {
-  "summary": "Implementation plan for fixing user listing, key generation loading state, and Firestore key schema alignment in ZYNC Admin Console.",
-  "updatedAt": "2026-10-14T13:18:14.727766565Z",
+  "summary": "Implementation plan for removing ₹199 plan and configuring Firestore keys collection with 30-day activation tracking.",
+  "updatedAt": "2026-10-14T13:40:51.555175750Z",
   "requestFeedback": true,
   "userFacing": true
 }

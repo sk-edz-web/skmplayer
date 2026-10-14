@@ -66,7 +66,7 @@ export interface UserProfile {
 export interface SubscriptionKey {
   id?: string;
   code: string;
-  plan: 99 | 199;
+  plan: number;
   planName: string;
   price: number;
   durationDays: number;
@@ -78,7 +78,7 @@ export interface SubscriptionKey {
   userId?: string;
   activatedBy?: string;
   activatedUserId?: string;
-  activatedAt?: number;
+  activatedAt?: number | string;
   usedAt?: number;
   status: "active" | "disabled" | "used";
   createdAt: number;
