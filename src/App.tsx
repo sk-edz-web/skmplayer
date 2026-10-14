@@ -1895,7 +1895,7 @@ export default function App() {
       } else if (keyData?.planName) {
         is199 = String(keyData.planName).includes("199");
       } else {
-        is199 = finalKeyCode.startsWith("199") || rawInput.startsWith("199");
+        is199 = false;
       }
 
       const planNumber: 99 | 199 = is199 ? 199 : 99;

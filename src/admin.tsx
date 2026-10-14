@@ -1166,9 +1166,8 @@ function AdminApp() {
         }
         return str;
       };
-      // Generate key strictly in xxx-xxx-xxx format with plan code (e.g. 199-A7X-92B for ₹199 and 099-A7X-92B for ₹99)
-      const planPrefix = selectedPlan === 199 ? "199" : "099";
-      const newKeyCode = `${planPrefix}-${r(3)}-${r(3)}`;
+      // Generate key strictly as 100% random characters in XXX-XXX-XXX format (no plan numbers in key string)
+      const newKeyCode = `${r(3)}-${r(3)}-${r(3)}`;
       
       // All keys have strictly 30 days validity that starts upon user activation (not creation date)
       const durationDays = 30;
@@ -3743,13 +3742,13 @@ function AdminApp() {
                 <div className="space-y-3 max-h-[580px] overflow-y-auto pr-2 custom-scrollbar">
                   {keysList
                     .filter((k) => {
-                      const is199 = Number(k.plan) === 199 || String(k.plan) === "199" || String(k.code).startsWith("199") || String(k.planName).includes("199");
+                      const is199 = Number(k.plan) === 199 || String(k.plan) === "199" || String(k.planName).includes("199");
                       if (keyFilterPlan === "99") return !is199;
                       if (keyFilterPlan === "199") return is199;
                       return true;
                     })
                     .map((k) => {
-                      const isKey199 = Number(k.plan) === 199 || String(k.plan) === "199" || String(k.code).startsWith("199") || String(k.planName).includes("199");
+                      const isKey199 = Number(k.plan) === 199 || String(k.plan) === "199" || String(k.planName).includes("199");
                       return (
                     <div
                       key={k.id}
