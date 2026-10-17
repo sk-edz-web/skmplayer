@@ -111,17 +111,20 @@ export interface VideoItem {
   createdAt: number;
 }
 
-export type ReportStatus = "open" | "seen" | "under_review" | "processing" | "done";
+export type ReportStatus = "open" | "seen" | "under_review" | "processing" | "done" | "pending" | "in_review" | "resolved";
 
 export interface ReportItem {
   id: string;
+  _collection?: string;
   userId?: string;
   userEmail?: string;
   userName?: string;
   userPhoto?: string;
   userPhone?: string;
+  phoneNumber?: string;
   contactPreference?: "call" | "message" | "whatsapp" | "email";
   requestType?: "report" | "call_request" | "message_request" | "subscription" | string;
+  type?: "feedback" | "call_request" | "bug_report" | string;
   isVIP?: boolean;
   proKey?: string;
   title?: string;

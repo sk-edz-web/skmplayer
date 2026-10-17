@@ -69,7 +69,8 @@ export default function AdminReportsManager({
   onShowToast
 }: AdminReportsManagerProps) {
   // Filter and Search States
-  const [subTab, setSubTab] = useState<"priority" | "normal" | "contacts" | "all">("priority");
+  const [mainTab, setMainTab] = useState<"call_requests" | "feedback" | "bug_reports" | "all">("call_requests");
+  const [subTab, setSubTab] = useState<"priority" | "normal" | "contacts" | "all">("all");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [copiedField, setCopiedField] = useState<string | null>(null);
@@ -317,29 +318,50 @@ export default function AdminReportsManager({
     });
   };
 
-  // Helper to check if a report is a contact/call/message request or has phone
-  const isContactRequest = (r: ReportItem) => {
-    return !!r.userPhone || r.requestType === "call_request" || r.requestType === "message_request" || !!r.contactPreference;
+  // Helpers to categorize reports
+  const isCallRequest = (r: ReportItem) => {
+    return r.type === "call_request" || r.requestType === "call_request" || Boolean(r.userPhone || r.phoneNumber) || (r.category && r.category.toLowerCase().includes("call"));
   };
+
+  const isFeedbackReport = (r: ReportItem) => {
+    return r.type === "feedback" || (r.category && r.category.toLowerCase().includes("feedback")) || (r.category && r.category.toLowerCase().includes("suggestion"));
+  };
+
+  const isBugReport = (r: ReportItem) => {
+    return !isCallRequest(r) && !isFeedbackReport(r);
+  };
+
+  const isContactRequest = (r: ReportItem) => isCallRequest(r);
 
   // Filter reports
   const filteredReports = reports.filter((r) => {
     const isVip = isVipReport(r);
-    const isContact = isContactRequest(r);
+    const isCall = isCallRequest(r);
+    const isFeedback = isFeedbackReport(r);
+    const isBug = isBugReport(r);
 
-    // Sub-tab filter (Priority vs Normal vs Contacts vs All)
+    // 1. Main Tab Section Filter
+    if (mainTab === "call_requests" && !isCall) return false;
+    if (mainTab === "feedback" && !isFeedback) return false;
+    if (mainTab === "bug_reports" && !isBug) return false;
+
+    // 2. Sub-tab filter (Priority vs Normal vs Contacts vs All)
     if (subTab === "priority" && !isVip) return false;
     if (subTab === "normal" && isVip) return false;
-    if (subTab === "contacts" && !isContact) return false;
+    if (subTab === "contacts" && !isCall) return false;
 
-    // Status filter
-    if (statusFilter !== "all" && r.status !== statusFilter) return false;
+    // 3. Status filter
+    if (statusFilter !== "all") {
+      if (statusFilter === "open" && r.status !== "open" && r.status !== "pending") return false;
+      if (statusFilter === "done" && r.status !== "done" && r.status !== "resolved") return false;
+      if (statusFilter !== "open" && statusFilter !== "done" && r.status !== statusFilter) return false;
+    }
 
-    // Search filter
+    // 4. Search filter
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
       const matchEmail = (r.userEmail || "").toLowerCase().includes(q);
-      const matchPhone = (r.userPhone || "").toLowerCase().includes(q);
+      const matchPhone = (r.userPhone || r.phoneNumber || "").toLowerCase().includes(q);
       const matchName = (r.userName || "").toLowerCase().includes(q);
       const matchDesc = (r.description || "").toLowerCase().includes(q);
       const matchTitle = (r.title || "").toLowerCase().includes(q);
@@ -358,12 +380,14 @@ export default function AdminReportsManager({
   const totalCount = reports.length;
   const vipCount = reports.filter(isVipReport).length;
   const normalCount = reports.filter((r) => !isVipReport(r)).length;
-  const contactsCount = reports.filter(isContactRequest).length;
-  const openCount = reports.filter((r) => r.status === "open").length;
+  const contactsCount = reports.filter(isCallRequest).length;
+  const feedbackCount = reports.filter(isFeedbackReport).length;
+  const bugReportsCount = reports.filter(isBugReport).length;
+  const openCount = reports.filter((r) => r.status === "open" || r.status === "pending").length;
   const seenCount = reports.filter((r) => r.status === "seen").length;
-  const underReviewCount = reports.filter((r) => r.status === "under_review").length;
+  const underReviewCount = reports.filter((r) => r.status === "under_review" || r.status === "in_review").length;
   const processingCount = reports.filter((r) => r.status === "processing").length;
-  const doneCount = reports.filter((r) => r.status === "done").length;
+  const doneCount = reports.filter((r) => r.status === "done" || r.status === "resolved").length;
 
   // Status appearance helpers
   const getStatusBadge = (status: ReportStatus) => {
@@ -543,6 +567,117 @@ export default function AdminReportsManager({
             <span className="text-[10px] font-mono text-slate-500">Done</span>
           </div>
         </div>
+      </div>
+
+      {/* 1.5 Primary 3 Section Navigation Tabs */}
+      <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+        {/* Tab 1: Call Requests */}
+        <button
+          type="button"
+          onClick={() => {
+            setMainTab("call_requests");
+            setSubTab("all");
+          }}
+          className={`p-4 rounded-2xl border transition-all text-left flex items-center justify-between ${
+            mainTab === "call_requests"
+              ? "bg-gradient-to-r from-emerald-500/20 to-teal-600/20 border-emerald-400/60 text-white shadow-[0_0_20px_rgba(16,185,129,0.2)] scale-[1.01]"
+              : "bg-white/5 border-white/10 text-slate-400 hover:text-slate-200 hover:bg-white/10"
+          }`}
+        >
+          <div className="flex items-center space-x-3">
+            <div className="p-2.5 rounded-xl bg-emerald-500/20 text-emerald-400">
+              <PhoneCall className="w-5 h-5 animate-pulse" />
+            </div>
+            <div>
+              <span className="text-sm font-bold block text-white">Call Requests</span>
+              <span className="text-[10px] text-slate-400">Phone callback requests</span>
+            </div>
+          </div>
+          <span className="px-2.5 py-1 rounded-full bg-emerald-500/20 text-emerald-300 text-xs font-mono font-bold">
+            {contactsCount}
+          </span>
+        </button>
+
+        {/* Tab 2: User Feedback */}
+        <button
+          type="button"
+          onClick={() => {
+            setMainTab("feedback");
+            setSubTab("all");
+          }}
+          className={`p-4 rounded-2xl border transition-all text-left flex items-center justify-between ${
+            mainTab === "feedback"
+              ? "bg-gradient-to-r from-amber-500/20 to-yellow-600/20 border-amber-400/60 text-white shadow-[0_0_20px_rgba(245,158,11,0.2)] scale-[1.01]"
+              : "bg-white/5 border-white/10 text-slate-400 hover:text-slate-200 hover:bg-white/10"
+          }`}
+        >
+          <div className="flex items-center space-x-3">
+            <div className="p-2.5 rounded-xl bg-amber-500/20 text-amber-400">
+              <MessageSquare className="w-5 h-5" />
+            </div>
+            <div>
+              <span className="text-sm font-bold block text-white">User Feedback</span>
+              <span className="text-[10px] text-slate-400">Suggestions & feedback</span>
+            </div>
+          </div>
+          <span className="px-2.5 py-1 rounded-full bg-amber-500/20 text-amber-300 text-xs font-mono font-bold">
+            {feedbackCount}
+          </span>
+        </button>
+
+        {/* Tab 3: Bug Reports & Issues */}
+        <button
+          type="button"
+          onClick={() => {
+            setMainTab("bug_reports");
+            setSubTab("all");
+          }}
+          className={`p-4 rounded-2xl border transition-all text-left flex items-center justify-between ${
+            mainTab === "bug_reports"
+              ? "bg-gradient-to-r from-cyan-500/20 to-indigo-600/20 border-cyan-400/60 text-white shadow-[0_0_20px_rgba(6,182,212,0.2)] scale-[1.01]"
+              : "bg-white/5 border-white/10 text-slate-400 hover:text-slate-200 hover:bg-white/10"
+          }`}
+        >
+          <div className="flex items-center space-x-3">
+            <div className="p-2.5 rounded-xl bg-cyan-500/20 text-cyan-400">
+              <AlertTriangle className="w-5 h-5" />
+            </div>
+            <div>
+              <span className="text-sm font-bold block text-white">Bug Reports & Issues</span>
+              <span className="text-[10px] text-slate-400">Audio bugs & UI issues</span>
+            </div>
+          </div>
+          <span className="px-2.5 py-1 rounded-full bg-cyan-500/20 text-cyan-300 text-xs font-mono font-bold">
+            {bugReportsCount}
+          </span>
+        </button>
+
+        {/* Tab 4: All Items */}
+        <button
+          type="button"
+          onClick={() => {
+            setMainTab("all");
+            setSubTab("all");
+          }}
+          className={`p-4 rounded-2xl border transition-all text-left flex items-center justify-between ${
+            mainTab === "all"
+              ? "bg-white/15 border-white/30 text-white shadow-md"
+              : "bg-white/5 border-white/10 text-slate-400 hover:text-slate-200 hover:bg-white/10"
+          }`}
+        >
+          <div className="flex items-center space-x-3">
+            <div className="p-2.5 rounded-xl bg-white/10 text-slate-200">
+              <Layers className="w-5 h-5" />
+            </div>
+            <div>
+              <span className="text-sm font-bold block text-white">All Records</span>
+              <span className="text-[10px] text-slate-400">View all items combined</span>
+            </div>
+          </div>
+          <span className="px-2.5 py-1 rounded-full bg-white/20 text-white text-xs font-mono font-bold">
+            {totalCount}
+          </span>
+        </button>
       </div>
 
       {/* 2. Main Navigation Controls: Sub-Tabs & Filters */}
@@ -1150,17 +1285,43 @@ export default function AdminReportsManager({
                       )}
                     </div>
 
-                    {/* Quick 1-tap Status Pills and Direct Send Notification button */}
-                    <div className="flex items-center space-x-1.5 overflow-x-auto py-0.5">
-                      <button
-                        type="button"
-                        onClick={(e) => handleOpenDirectNotif(report, e)}
-                        className="px-2.5 py-1 rounded-lg text-[10px] font-mono font-bold bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/30 text-amber-300 hover:text-amber-200 transition-all flex items-center space-x-1"
-                        title="Send in-app notification to this user"
-                      >
-                        <Bell className="w-3 h-3 text-amber-400" />
-                        <span>Notify</span>
-                      </button>
+                      {/* Quick 1-tap Status Pills and Direct Send Notification button */}
+                      <div className="flex items-center space-x-1.5 overflow-x-auto py-0.5">
+                        {/* Explicit Call Done Button for Call Requests */}
+                        {isCallRequest(report) && (
+                          <button
+                            type="button"
+                            onClick={(e) => handleQuickStatusChange(e, report, "resolved")}
+                            className="px-2.5 py-1 rounded-lg text-[10px] font-mono font-bold bg-emerald-500/20 hover:bg-emerald-500/35 border border-emerald-500/40 text-emerald-300 hover:text-white transition-all flex items-center space-x-1"
+                            title="Mark Call Request as Completed"
+                          >
+                            <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                            <span>Call Done</span>
+                          </button>
+                        )}
+
+                        {/* Explicit Resolve Button for Bug Reports & Issues */}
+                        {isBugReport(report) && (
+                          <button
+                            type="button"
+                            onClick={(e) => handleQuickStatusChange(e, report, "resolved")}
+                            className="px-2.5 py-1 rounded-lg text-[10px] font-mono font-bold bg-cyan-500/20 hover:bg-cyan-500/35 border border-cyan-500/40 text-cyan-300 hover:text-white transition-all flex items-center space-x-1"
+                            title="Mark Bug Report as Resolved"
+                          >
+                            <CheckCircle2 className="w-3 h-3 text-cyan-400" />
+                            <span>Resolve</span>
+                          </button>
+                        )}
+
+                        <button
+                          type="button"
+                          onClick={(e) => handleOpenDirectNotif(report, e)}
+                          className="px-2.5 py-1 rounded-lg text-[10px] font-mono font-bold bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/30 text-amber-300 hover:text-amber-200 transition-all flex items-center space-x-1"
+                          title="Send in-app notification to this user"
+                        >
+                          <Bell className="w-3 h-3 text-amber-400" />
+                          <span>Notify</span>
+                        </button>
 
                       <button
                         type="button"

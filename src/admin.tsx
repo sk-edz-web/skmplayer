@@ -1447,36 +1447,109 @@ function AdminApp() {
     }, 4500);
   };
 
-  // Real-time Firestore Reports Subscription
+  // Real-time Firestore Multi-Collection Reports & Feedback Subscription
   useEffect(() => {
     setLoadingReports(true);
-    const q = query(collection(db, "reports"), orderBy("createdAt", "desc"));
-    const unsubscribe = onSnapshot(
-      q,
-      (snapshot) => {
-        const list: ReportItem[] = [];
-        snapshot.forEach((d) => {
-          list.push({ id: d.id, ...d.data() } as ReportItem);
-        });
-        setReports(list);
-        setLoadingReports(false);
-      },
-      (err) => {
-        console.warn("Ordered reports query failed, falling back to unordered listener:", err);
-        const fallbackUnsub = onSnapshot(collection(db, "reports"), (snap) => {
-          const list: ReportItem[] = [];
-          snap.forEach((d) => {
-            list.push({ id: d.id, ...d.data() } as ReportItem);
-          });
-          list.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-          setReports(list);
-          setLoadingReports(false);
-        });
-        return () => fallbackUnsub();
-      }
-    );
+    const collectionsToListen = [
+      "reports",
+      "issues",
+      "admin_reports",
+      "feedback",
+      "call_requests",
+      "request_call"
+    ];
 
-    return () => unsubscribe();
+    const collectionsData: { [colName: string]: ReportItem[] } = {};
+
+    const normalizeDoc = (d: any, colName: string): ReportItem => {
+      const data = d.data();
+      const rawType = data.type || (colName.includes("call") ? "call_request" : colName.includes("feedback") ? "feedback" : "bug_report");
+      const rawCategory = data.category || (rawType === "call_request" ? "Call Request" : rawType === "feedback" ? "Feedback" : "Bug Report");
+      const phone = data.phoneNumber || data.phone || data.userPhone || "";
+      
+      let createdAtMs = Date.now();
+      if (typeof data.createdAt === "number") {
+        createdAtMs = data.createdAt;
+      } else if (data.createdAt?.toMillis) {
+        createdAtMs = data.createdAt.toMillis();
+      } else if (data.timestamp?.toMillis) {
+        createdAtMs = data.timestamp.toMillis();
+      } else if (typeof data.timestamp === "number") {
+        createdAtMs = data.timestamp;
+      }
+
+      return {
+        id: d.id,
+        _collection: colName,
+        userId: data.userId || data.user_id || data.uid || "",
+        userEmail: data.userEmail || data.email || "",
+        userName: data.userName || data.name || data.displayName || "",
+        userPhoto: data.userPhoto || data.photoURL || "",
+        userPhone: phone,
+        phoneNumber: phone,
+        contactPreference: data.contactPreference || (phone ? "call" : "email"),
+        requestType: data.requestType || rawType,
+        type: rawType,
+        isVIP: Boolean(data.isVIP || data.vip || data.isPro),
+        proKey: data.proKey || "",
+        title: data.title || data.subject || (rawType === "call_request" ? "Phone Call Request" : rawType === "feedback" ? "User Feedback" : "Bug Report"),
+        category: rawCategory,
+        description: data.description || data.message || data.feedback || data.details || "",
+        songId: data.songId || data.song_id || "",
+        songTitle: data.songTitle || data.song_title || "",
+        songArtist: data.songArtist || data.artist || "",
+        deviceInfo: data.deviceInfo || "",
+        appVersion: data.appVersion || "",
+        status: (data.status || "pending") as ReportStatus,
+        adminNotes: data.adminNotes || "",
+        adminReply: data.adminReply || "",
+        createdAt: createdAtMs,
+        updatedAt: data.updatedAt || createdAtMs,
+        priority: data.priority || (Boolean(data.isVIP || data.vip) ? "vip" : "normal")
+      };
+    };
+
+    const updateMergedReports = () => {
+      const allMap = new Map<string, ReportItem>();
+      Object.values(collectionsData).forEach((items) => {
+        items.forEach((item) => {
+          allMap.set(item.id, item);
+        });
+      });
+      const mergedList = Array.from(allMap.values());
+      mergedList.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+      setReports(mergedList);
+      setLoadingReports(false);
+    };
+
+    const unsubs = collectionsToListen.map((colName) => {
+      try {
+        const q = query(collection(db, colName), orderBy("createdAt", "desc"));
+        return onSnapshot(q, (snapshot) => {
+          const list: ReportItem[] = [];
+          snapshot.forEach((d) => list.push(normalizeDoc(d, colName)));
+          collectionsData[colName] = list;
+          updateMergedReports();
+        }, () => {
+          const fallbackUnsub = onSnapshot(collection(db, colName), (snap) => {
+            const list: ReportItem[] = [];
+            snap.forEach((d) => list.push(normalizeDoc(d, colName)));
+            collectionsData[colName] = list;
+            updateMergedReports();
+          }, () => {
+            collectionsData[colName] = [];
+            updateMergedReports();
+          });
+          return fallbackUnsub;
+        });
+      } catch {
+        return () => {};
+      }
+    });
+
+    return () => {
+      unsubs.forEach((unsub) => unsub && unsub());
+    };
   }, []);
 
   // Real-time Artists Collection Subscription
@@ -1586,7 +1659,12 @@ function AdminApp() {
   const handleBulkDeleteReports = async (reportIds: string[]) => {
     if (!reportIds || reportIds.length === 0) return;
     try {
-      await Promise.all(reportIds.map((id) => deleteDoc(doc(db, "reports", id))));
+      const promises = reportIds.map((id) => {
+        const item = reports.find((r) => r.id === id);
+        const col = item?._collection || "reports";
+        return deleteDoc(doc(db, col, id));
+      });
+      await Promise.all(promises);
       showAdminToast(`Successfully deleted ${reportIds.length} report document${reportIds.length === 1 ? "" : "s"}! 🗑️`, "success");
     } catch (err: any) {
       console.error("Failed to bulk delete reports:", err);
@@ -1604,7 +1682,8 @@ function AdminApp() {
   ) => {
     setIsUpdatingReport(true);
     try {
-      const reportRef = doc(db, "reports", report.id);
+      const targetCol = report._collection || "reports";
+      const reportRef = doc(db, targetCol, report.id);
       const updateData: any = {
         status: newStatus,
         updatedAt: Date.now()
@@ -1620,59 +1699,40 @@ function AdminApp() {
 
       // Dispatch real-time in-app notification to the user
       if (report.userId) {
-        const statusMeta: Record<ReportStatus, { title: string; desc: string }> = {
-          open: {
-            title: "Report Status: Open 📩",
-            desc: "Your report is in the queue and scheduled for review."
-          },
-          seen: {
-            title: "Admin Viewed Your Report 👀",
-            desc: "Administrator has seen and acknowledged your reported issue."
-          },
-          under_review: {
-            title: "Report Under Review 🔍",
-            desc: "Administrator is investigating and reviewing the details of your report."
-          },
-          processing: {
-            title: "Report In Progress ⚙️",
-            desc: "Administrator is actively resolving and fixing the issue you submitted."
-          },
-          done: {
-            title: "Report Resolved! ✅",
-            desc: "The issue you reported has been successfully addressed and completed."
-          }
-        };
+        const notifTitle = newStatus === "resolved" || newStatus === "done" 
+          ? "Report Resolved! ✅" 
+          : newStatus === "in_review" || newStatus === "under_review" 
+          ? "Report Under Review 🔍" 
+          : "Report Status Updated 🔔";
 
-        const meta = statusMeta[newStatus] || {
-          title: `Report Status: ${newStatus}`,
-          desc: `Your report status was updated to ${newStatus}.`
-        };
-
-        const finalNotificationMsg = customReply?.trim()
-          ? `${meta.desc}\n\n💬 Admin Message: "${customReply.trim()}"`
-          : meta.desc;
+        const notifDesc = customReply?.trim() 
+          ? `Your ${report.category || "issue"} report has been updated.\n\n💬 Admin Message: "${customReply.trim()}"`
+          : `Your ${report.category || "issue"} report status was updated to "${newStatus.replace("_", " ")}".`;
 
         await addDoc(collection(db, "notifications"), {
           userId: report.userId,
           reportId: report.id,
-          title: meta.title,
-          message: finalNotificationMsg,
+          title: notifTitle,
+          message: notifDesc,
           status: newStatus,
           type: "report_update",
           read: false,
           createdAt: Date.now()
-        });
+        }).catch(() => {});
+
+        await addDoc(collection(db, "admin_notifications"), {
+          userId: report.userId,
+          reportId: report.id,
+          title: notifTitle,
+          message: notifDesc,
+          status: newStatus,
+          type: "report_update",
+          read: false,
+          createdAt: Date.now()
+        }).catch(() => {});
       }
 
-      const statusLabels: Record<ReportStatus, string> = {
-        open: "Open",
-        seen: "Seen",
-        under_review: "Under Review",
-        processing: "Processing",
-        done: "Done"
-      };
-
-      showAdminToast(`Status changed to ${statusLabels[newStatus]} & Notification sent! 🚀`, "success");
+      showAdminToast(`Status changed to "${newStatus.replace("_", " ")}" & Notification sent! 🚀`, "success");
     } catch (err: any) {
       console.error("Failed to update report status:", err);
       showAdminToast(`Error updating report: ${err.message || "Failed"}`, "error");
@@ -1683,12 +1743,14 @@ function AdminApp() {
 
   // Delete Report permanently
   const handleDeleteReport = async (reportId: string) => {
+    const reportToDelete = reports.find((r) => r.id === reportId);
+    const targetCol = reportToDelete?._collection || "reports";
     if (!window.confirm("Are you sure you want to permanently delete this report record?")) {
       return;
     }
     setIsDeletingReportId(reportId);
     try {
-      await deleteDoc(doc(db, "reports", reportId));
+      await deleteDoc(doc(db, targetCol, reportId));
       showAdminToast("Report successfully deleted! 🗑️", "success");
     } catch (err: any) {
       console.error("Failed to delete report:", err);
