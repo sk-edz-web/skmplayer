@@ -1,0 +1,92 @@
+================================================================================
+APP DETAILS AND ARCHITECTURE DUMP - ZYNC MEDIA PLAYER
+================================================================================
+
+1. APP BASIC INFO
+--------------------------------------------------------------------------------
+APP_NAME = zync_media_player (found in: metadata.json)
+DISPLAY_TITLE = ZYNC High-Fidelity Music & Video Streaming Platform (found in: index.html, metadata.json)
+FRAMEWORK = React 19 SPA with Vite 6 & Tailwind CSS v4 (found in: package.json, vite.config.ts)
+LANGUAGE = TypeScript 5.8 (found in: tsconfig.json, package.json)
+SERVER_RUNTIME = Express 4 with tsx runner on Node.js (found in: server.ts, package.json)
+HOSTING_PORT = 3000 (found in: server.ts)
+FRONTEND_ENTRY_FILES = index.html, src/main.tsx, src/App.tsx (found in: index.html, src/main.tsx)
+ADMIN_ENTRY_FILES = admin.html, src/admin.tsx (found in: admin.html, src/admin.tsx)
+SERVER_ENTRY_FILES = server.ts, api/admin/login.ts, api/admin/verify.ts (found in: server.ts, api/admin/login.ts, api/admin/verify.ts)
+
+2. ALL API KEYS & CONFIG VALUES
+--------------------------------------------------------------------------------
+FIREBASE_API_KEY = AIzaSyBHocbotAvVZUhrmkNSPX-ArAhTzul4Ggg (found in: src/firebase.ts)
+FIREBASE_AUTH_DOMAIN = skedz-p.firebaseapp.com (found in: src/firebase.ts)
+FIREBASE_PROJECT_ID = skedz-p (found in: src/firebase.ts, firebase-blueprint.json)
+FIREBASE_STORAGE_BUCKET = skedz-p.firebasestorage.app (found in: src/firebase.ts)
+FIREBASE_MESSAGING_SENDER_ID = 799073385490 (found in: src/firebase.ts)
+FIREBASE_APP_ID = 1:799073385490:web:80bd61e3e6db0e93656ccb (found in: src/firebase.ts)
+FIREBASE_MEASUREMENT_ID = G-YJF3ELZ231 (found in: src/firebase.ts)
+GEMINI_API_KEY = MY_GEMINI_API_KEY (found in: .env.example)
+CLOUDINARY_CLOUD_NAME = oe3mhx3g (found in: server.ts, src/lib/cloudinary.ts)
+CLOUDINARY_API_KEY = 961445142313949 (found in: server.ts, src/lib/cloudinary.ts)
+CLOUDINARY_API_SECRET = cOBkn-mTeSsdPuC1krSkbR9B5rM (found in: server.ts)
+CLOUDINARY_UPLOAD_PRESET = ml_default (found in: server.ts, src/lib/cloudinary.ts)
+ADMIN_EMAIL = sarathik354@gmail.com (found in: .env.example, server.ts, api/admin/login.ts, api/admin/verify.ts)
+ADMIN_PASSWORD = Sarathi@5023 (found in: .env.example, server.ts, api/admin/login.ts)
+ADMIN_SECRET_KEY = sk_edz_admin_secret_key_session_token_secure (found in: .env.example, server.ts, api/admin/login.ts, api/admin/verify.ts)
+ADMIN_SHA256_FALLBACK_HASH = 68a9607e63390b16ceac905372a0c2e2acf1b672bc247f62aedf5c7d89584062 (found in: src/admin.tsx)
+
+3. BACKEND DETAILS
+--------------------------------------------------------------------------------
+DATABASE_TYPE = Firebase Firestore NoSQL Database (found in: src/firebase.ts)
+FIREBASE_PROJECT_ID = skedz-p (found in: src/firebase.ts, firebase-blueprint.json)
+FIRESTORE_COLLECTION_USERS = users/{userId} (found in: firebase-blueprint.json, src/admin.tsx, src/App.tsx)
+FIRESTORE_COLLECTION_SONGS = songs/{songId} (found in: firebase-blueprint.json, src/admin.tsx, src/App.tsx)
+FIRESTORE_COLLECTION_PLAYLISTS = playlists/{playlistId} (found in: firebase-blueprint.json, src/admin.tsx, src/App.tsx)
+FIRESTORE_COLLECTION_KEYS = keys/{keyId} (found in: firebase-blueprint.json, src/admin.tsx, src/App.tsx)
+FIRESTORE_COLLECTION_VIDEOS = videos/{videoId} (found in: src/components/AdminVideosManager.tsx, src/App.tsx)
+FIRESTORE_COLLECTION_ARTISTS = artists/{artistId} (found in: src/components/AdminArtistsManager.tsx, src/App.tsx)
+FIRESTORE_COLLECTION_REPORTS = reports/{reportId} (found in: firebase-blueprint.json, src/components/AdminReportsManager.tsx)
+FIRESTORE_COLLECTION_NOTIFICATIONS = notifications/{notificationId} (found in: firebase-blueprint.json, src/components/AdminReportsManager.tsx)
+FIRESTORE_COLLECTION_SETTINGS = settings/cloudinary (found in: src/lib/cloudinary.ts)
+MEDIA_CDN_STORAGE = Cloudinary CDN (oe3mhx3g) (found in: server.ts, src/lib/cloudinary.ts)
+LOCAL_FILE_UPLOADS_DIR = /uploads/ (found in: server.ts)
+LOCAL_KEYS_FILE_STORAGE = /data/keys.json (found in: server.ts, data/keys.json)
+SERVER_API_ROUTES = /api/admin/login, /api/admin/verify, /api/upload, /api/keys, /api/video-info (found in: server.ts, api/admin/login.ts, api/admin/verify.ts)
+
+4. CURRENT ADMIN SYSTEM
+--------------------------------------------------------------------------------
+ADMIN_LOGIN_FLOW = Server API POST /api/admin/login generates HMAC SHA-256 session token stored in sessionStorage (found in: server.ts, api/admin/login.ts, src/admin.tsx)
+ADMIN_VERIFY_FLOW = POST /api/admin/verify validates HMAC signature and checks if email equals ADMIN_EMAIL (found in: server.ts, api/admin/verify.ts, src/admin.tsx)
+ADMIN_FALLBACK_AUTH = Local SHA-256 string hash comparison in browser when server API is unreachable (found in: src/admin.tsx)
+ADMIN_DECISION_LOGIC = Compares input credentials against ADMIN_EMAIL ("sarathik354@gmail.com") and ADMIN_PASSWORD ("Sarathi@5023") (found in: server.ts, api/admin/login.ts, src/admin.tsx)
+ADMIN_DEFAULT_EMAIL = sarathik354@gmail.com (found in: .env.example, server.ts, api/admin/login.ts, api/admin/verify.ts)
+ADMIN_DEFAULT_PASSWORD = Sarathi@5023 (found in: .env.example, server.ts, api/admin/login.ts)
+ADMIN_PORTAL_ROUTE = /admin.html (found in: admin.html)
+ADMIN_MAIN_COMPONENT = src/admin.tsx (found in: src/admin.tsx)
+
+5. SHARED WITH OTHER 2 APPS
+--------------------------------------------------------------------------------
+SHARED_FIREBASE_PROJECT = Project ID "skedz-p" is used by all 3 apps (found in: src/firebase.ts, firebase-blueprint.json)
+SHARED_FIRESTORE_COLLECTIONS = "songs", "playlists", "artists", "videos", "keys", "users", "reports", "notifications" collections are shared with the other 2 apps (found in: src/firebase.ts, src/admin.tsx, src/App.tsx)
+SHARED_ADMIN_ACCOUNT = Email "sarathik354@gmail.com" and password "Sarathi@5023" control all 3 apps (found in: server.ts, api/admin/login.ts, .env.example)
+SHARED_CLOUDINARY_ACCOUNT = Cloud name "oe3mhx3g" and upload preset "ml_default" are shared with the other 2 apps (found in: server.ts, src/lib/cloudinary.ts)
+
+6. LIST OF ADMIN FEATURES
+--------------------------------------------------------------------------------
+FEATURE_SONGS_MANAGEMENT = Upload audio files, edit title/artist/album/lyrics, auto-extract ID3 metadata, delete tracks (found in: src/admin.tsx)
+FEATURE_VIDEOS_MANAGEMENT = Add YouTube and direct video links, auto-fetch YouTube metadata/durations, edit/delete videos (found in: src/components/AdminVideosManager.tsx)
+FEATURE_BULK_UPLOAD = Mass upload multiple MP3 tracks simultaneously (found in: src/components/AdminBulkUpload.tsx)
+FEATURE_DUPLICATE_CLEANER = Scan and delete duplicate song titles and artists (found in: src/admin.tsx)
+FEATURE_PLAYLISTS_MANAGEMENT = Create, edit, feature, and delete public/private playlists (found in: src/components/AdminPlaylistsManager.tsx)
+FEATURE_ARTISTS_MANAGEMENT = Create and edit artist profile pages, bios, artwork, and social media links (found in: src/components/AdminArtistsManager.tsx)
+FEATURE_VIP_KEYS_MANAGEMENT = Generate 100% random ₹99 30-day VIP passcodes, view user activation dates & expiration dates, disable/reset keys (found in: src/admin.tsx)
+FEATURE_USERS_DIRECTORY = View real-time registered user email directory, search users, grant/revoke VIP status (found in: src/admin.tsx)
+FEATURE_CLOUDINARY_CDN_MANAGER = Inspect, upload, and clean Cloudinary media assets (found in: src/components/AdminCloudinaryManager.tsx)
+FEATURE_REPORTS_MANAGER = Review audio/app glitch reports, update report status, reply to users, trigger real-time notifications (found in: src/components/AdminReportsManager.tsx)
+FEATURE_SYNC_TRIGGER = Trigger global last updated sync to force client refresh (found in: src/components/AdminLastUpdated.tsx)
+
+7. MISSING INFO
+--------------------------------------------------------------------------------
+MISSING_ITEM_1 = Custom Firebase Security Rules deployed on Firebase Console (firestore.rules file does not exist locally; rules are managed on Firebase Console for project "skedz-p").
+STEPS_FOR_MISSING_1 = Go to https://console.firebase.google.com -> Open project "skedz-p" -> Click Firestore Database -> Click Rules tab.
+MISSING_ITEM_2 = Firebase Admin Service Account JSON private keys (not present locally, using client Firebase SDK and server proxy).
+STEPS_FOR_MISSING_2 = Go to https://console.firebase.google.com -> Open project "skedz-p" -> Project Settings -> Service accounts -> Generate new private key (if needed).
+================================================================================
